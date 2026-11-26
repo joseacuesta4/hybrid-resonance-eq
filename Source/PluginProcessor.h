@@ -3,20 +3,15 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "dsp/ParametricEQEngine.h"
 #include "dsp/SpectralResonanceEngine.h"
-#include <array>
-#include <atomic>
 
-class HybridResonanceEQAudioProcessor : public juce::AudioProcessor
+class HybridResonanceEQProcessor : public juce::AudioProcessor
 {
 public:
-    static constexpr int kNumBands = dspcore::ParametricEQEngine::kNumBands;
-    static constexpr int kSpectrumBins = dspcore::SpectralResonanceEngine::numBins;
-
-    HybridResonanceEQAudioProcessor();
-    ~HybridResonanceEQAudioProcessor() override = default;
+    HybridResonanceEQProcessor();
+    ~HybridResonanceEQProcessor() override = default;
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override {}
+    void releaseResources() override;
 
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
@@ -25,6 +20,7 @@ public:
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return JucePlugin_Name; }
+
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
@@ -39,41 +35,39 @@ public:
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
-    juce::AudioProcessorValueTreeState& getAPVTS() noexcept { return apvts; }
-    const dspcore::ParametricEQEngine& getEQEngine() const noexcept { return eqEngine; }
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+    juce::AudioProcessorValueTreeState apvts;
 
-    // Lectura segura desde el hilo de GUI a 30 FPS
-    void copyLatestSpectrumDb(std::array<float, kSpectrumBins>& dest) const noexcept;
-    void copyLatestDynamicOffsets(std::array<float, kNumBands>& dest) const noexcept;
+    void getVisualData(std::array<float, dspcore::SpectralResonanceEngine::numBins>& outPreDb,
+                       std::array<float, dspcore::SpectralResonanceEngine::numBins>& outPostDb,
+                       std::array<float, dspcore::SpectralResonanceEngine::numBins>& outReductionDb) const noexcept
+    {
+        spectralEngine.getSpectra(outPreDb, outPostDb, outReductionDb);
+    }
 
-    // IDs de parámetros
-    static juce::String bandEnabledId(int b) { return "b" + juce::String(b) + "_en"; }
-    static juce::String bandSoloId(int b)    { return "b" + juce::String(b) + "_solo"; }
-    static juce::String bandDynEnId(int b)   { return "b" + juce::String(b) + "_dyn"; }
-    static juce::String bandTypeId(int b)    { return "b" + juce::String(b) + "_type"; }
-    static juce::String bandRouteId(int b)   { return "b" + juce::String(b) + "_route"; }
-    static juce::String bandFreqId(int b)    { return "b" + juce::String(b) + "_freq"; }
-    static juce::String bandGainId(int b)    { return "b" + juce::String(b) + "_gain"; }
-    static juce::String bandQId(int b)       { return "b" + juce::String(b) + "_q"; }
-    static juce::String bandThreshId(int b)  { return "b" + juce::String(b) + "_thr"; }
-    static juce::String bandRangeId(int b)   { return "b" + juce::String(b) + "_rng"; }
+    float getCombinedEQResponseDb(double freqHz) const noexcept
+    {
+        return eqEngine.getCombinedResponseDb(freqHz);
+    }
+
+    float getBandEQResponseDb(int bandIndex, double freqHz) const noexcept
+    {
+        return eqEngine.getBandResponseDb(bandIndex, freqHz);
+    }
+
+    float getBandDynamicGainDb(int bandIndex) const noexcept
+    {
+        return eqEngine.getBandDynamicGainDb(bandIndex);
+    }
+
+    double getCurrentSampleRateHz() const noexcept { return currentSampleRate; }
 
 private:
-    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
-    void syncEnginesFromParameters() noexcept;
+    void syncParametersToDSP();
 
-    juce::AudioProcessorValueTreeState apvts;
     dspcore::ParametricEQEngine eqEngine;
     dspcore::SpectralResonanceEngine spectralEngine;
+    double currentSampleRate = 48000.0;
 
-    // Doble buffer lock-free para espectro y dinámica hacia la GUI
-    std::array<std::array<float, kSpectrumBins>, 2> spectrumBuffers {};
-    std::atomic<int> activeSpectrumReadIndex { 0 };
-    int spectrumWriteIndex { 1 };
-
-    std::array<std::array<float, kNumBands>, 2> dynBuffers {};
-    std::atomic<int> activeDynReadIndex { 0 };
-    int dynWriteIndex { 1 };
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HybridResonanceEQAudioProcessor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HybridResonanceEQProcessor)
 };
