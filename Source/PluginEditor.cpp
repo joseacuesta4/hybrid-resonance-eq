@@ -222,14 +222,14 @@ void HybridResonanceEQAudioProcessorEditor::resized()
         panelW,
         panelH);
 
-    bandEnableButton.setBounds(floatingBarBounds.getX() + 10, floatingBarBounds.getY() + 18, 42, 26);
-    bandTypeBox.setBounds(floatingBarBounds.getX() + 58, floatingBarBounds.getY() + 18, 92, 26);
-    freqSlider.setBounds(floatingBarBounds.getX() + 158, floatingBarBounds.getY() + 6, 84, 56);
-    gainSlider.setBounds(floatingBarBounds.getX() + 246, floatingBarBounds.getY() + 6, 84, 56);
-    qSlider.setBounds(floatingBarBounds.getX() + 334, floatingBarBounds.getY() + 6, 84, 56);
-    bandRouteBox.setBounds(floatingBarBounds.getX() + 426, floatingBarBounds.getY() + 18, 80, 26);
-    dynButton.setBounds(floatingBarBounds.getX() + 512, floatingBarBounds.getY() + 18, 46, 26);
-    soloButton.setBounds(floatingBarBounds.getX() + 562, floatingBarBounds.getY() + 18, 48, 26);
+    bandEnableButton.setBounds(juce::roundToInt(floatingBarBounds.getX() + 10.0f), juce::roundToInt(floatingBarBounds.getY() + 18.0f), 42, 26);
+    bandTypeBox.setBounds(juce::roundToInt(floatingBarBounds.getX() + 58.0f), juce::roundToInt(floatingBarBounds.getY() + 18.0f), 92, 26);
+    freqSlider.setBounds(juce::roundToInt(floatingBarBounds.getX() + 158.0f), juce::roundToInt(floatingBarBounds.getY() + 6.0f), 84, 56);
+    gainSlider.setBounds(juce::roundToInt(floatingBarBounds.getX() + 246.0f), juce::roundToInt(floatingBarBounds.getY() + 6.0f), 84, 56);
+    qSlider.setBounds(juce::roundToInt(floatingBarBounds.getX() + 334.0f), juce::roundToInt(floatingBarBounds.getY() + 6.0f), 84, 56);
+    bandRouteBox.setBounds(juce::roundToInt(floatingBarBounds.getX() + 426.0f), juce::roundToInt(floatingBarBounds.getY() + 18.0f), 80, 26);
+    dynButton.setBounds(juce::roundToInt(floatingBarBounds.getX() + 512.0f), juce::roundToInt(floatingBarBounds.getY() + 18.0f), 46, 26);
+    soloButton.setBounds(juce::roundToInt(floatingBarBounds.getX() + 562.0f), juce::roundToInt(floatingBarBounds.getY() + 18.0f), 48, 26);
 
     bottomSpecBarBounds = juce::Rectangle<float>(
         bounds.getX() + 8.0f,
@@ -238,12 +238,12 @@ void HybridResonanceEQAudioProcessorEditor::resized()
         specBarH);
 
     const float sy = bottomSpecBarBounds.getY();
-    specEnableButton.setBounds(bottomSpecBarBounds.getX() + 12, sy + 20, 86, 28);
-    specDeltaButton.setBounds(bottomSpecBarBounds.getX() + 104, sy + 20, 72, 28);
-    depthSlider.setBounds(bottomSpecBarBounds.getX() + 195, sy + 4, 86, 60);
-    sharpSlider.setBounds(bottomSpecBarBounds.getX() + 286, sy + 4, 86, 60);
-    smoothSlider.setBounds(bottomSpecBarBounds.getX() + 377, sy + 4, 86, 60);
-    mixSlider.setBounds(bottomSpecBarBounds.getX() + 468, sy + 4, 86, 60);
+    specEnableButton.setBounds(juce::roundToInt(bottomSpecBarBounds.getX() + 12.0f), juce::roundToInt(sy + 20.0f), 86, 28);
+    specDeltaButton.setBounds(juce::roundToInt(bottomSpecBarBounds.getX() + 104.0f), juce::roundToInt(sy + 20.0f), 72, 28);
+    depthSlider.setBounds(juce::roundToInt(bottomSpecBarBounds.getX() + 195.0f), juce::roundToInt(sy + 4.0f), 86, 60);
+    sharpSlider.setBounds(juce::roundToInt(bottomSpecBarBounds.getX() + 286.0f), juce::roundToInt(sy + 4.0f), 86, 60);
+    smoothSlider.setBounds(juce::roundToInt(bottomSpecBarBounds.getX() + 377.0f), juce::roundToInt(sy + 4.0f), 86, 60);
+    mixSlider.setBounds(juce::roundToInt(bottomSpecBarBounds.getX() + 468.0f), juce::roundToInt(sy + 4.0f), 86, 60);
 }
 
 void HybridResonanceEQAudioProcessorEditor::paint(juce::Graphics& g)
@@ -253,14 +253,14 @@ void HybridResonanceEQAudioProcessorEditor::paint(juce::Graphics& g)
     g.setColour(juce::Colour(0xff202227));
     g.fillRect(0, 0, getWidth(), 34);
     g.setColour(juce::Colours::white.withAlpha(0.85f));
-    g.setFont(juce::Font(15.0f, juce::Font::bold));
+    g.setFont(juce::Font(juce::FontOptions(15.0f).withStyle("Bold")));
     g.drawText("HYBRID RESONANCE EQ  |  16-BAND PRO-STYLE + 2048 FFT SPECTRAL", 14, 0, 560, 34, juce::Justification::centredLeft);
 
     g.setColour(juce::Colour(0xff1c1e23));
     g.fillRect(plotBounds);
 
     const std::array<float, 10> freqTicks { 20.0f, 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
-    g.setFont(juce::Font(11.0f));
+    g.setFont(juce::Font(juce::FontOptions(11.0f)));
 
     for (float f : freqTicks)
     {
@@ -370,7 +370,7 @@ void HybridResonanceEQAudioProcessorEditor::paint(juce::Graphics& g)
         g.setColour(juce::Colour(0xff17181b));
         g.drawEllipse(nx - 7.0f, ny - 7.0f, 14.0f, 14.0f, 1.5f);
 
-        g.setFont(juce::Font(10.0f, juce::Font::bold));
+        g.setFont(juce::Font(juce::FontOptions(10.0f).withStyle("Bold")));
         g.drawText(juce::String(b + 1), static_cast<int>(nx) - 7, static_cast<int>(ny) - 7, 14, 14, juce::Justification::centred);
     }
 
@@ -383,9 +383,9 @@ void HybridResonanceEQAudioProcessorEditor::paint(juce::Graphics& g)
     g.fillRoundedRectangle(bottomSpecBarBounds, 6.0f);
 
     g.setColour(juce::Colours::white.withAlpha(0.65f));
-    g.setFont(juce::Font(11.0f));
-    g.drawText("Depth", static_cast<int>(depthSlider.getX()), static_cast<int>(bottomSpecBarBounds.getY()) + 2, static_cast<int>(depthSlider.getWidth()), 14, juce::Justification::centred);
-    g.drawText("Sharp", static_cast<int>(sharpSlider.getX()), static_cast<int>(bottomSpecBarBounds.getY()) + 2, static_cast<int>(sharpSlider.getWidth()), 14, juce::Justification::centred);
-    g.drawText("Smooth", static_cast<int>(smoothSlider.getX()), static_cast<int>(bottomSpecBarBounds.getY()) + 2, static_cast<int>(smoothSlider.getWidth()), 14, juce::Justification::centred);
-    g.drawText("Mix", static_cast<int>(mixSlider.getX()), static_cast<int>(bottomSpecBarBounds.getY()) + 2, static_cast<int>(mixSlider.getWidth()), 14, juce::Justification::centred);
+    g.setFont(juce::Font(juce::FontOptions(11.0f)));
+    g.drawText("Depth", depthSlider.getX(), juce::roundToInt(bottomSpecBarBounds.getY()) + 2, depthSlider.getWidth(), 14, juce::Justification::centred);
+    g.drawText("Sharp", sharpSlider.getX(), juce::roundToInt(bottomSpecBarBounds.getY()) + 2, sharpSlider.getWidth(), 14, juce::Justification::centred);
+    g.drawText("Smooth", smoothSlider.getX(), juce::roundToInt(bottomSpecBarBounds.getY()) + 2, smoothSlider.getWidth(), 14, juce::Justification::centred);
+    g.drawText("Mix", mixSlider.getX(), juce::roundToInt(bottomSpecBarBounds.getY()) + 2, mixSlider.getWidth(), 14, juce::Justification::centred);
 }
