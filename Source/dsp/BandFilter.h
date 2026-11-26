@@ -34,6 +34,7 @@ struct BandParams
     bool enabled = false;
     bool solo = false;
     bool dynamicEnabled = false;
+    bool autoThreshold = true;
 
     FilterShape shape = FilterShape::Bell;
     ChannelRoute route = ChannelRoute::Stereo;
@@ -52,11 +53,24 @@ struct BandParams
 class BandFilter
 {
 public:
+    static bool supportsSlope(FilterShape shape) noexcept
+    {
+        return shape == FilterShape::LowCut || shape == FilterShape::HighCut;
+    }
+
+    static bool supportsGain(FilterShape shape) noexcept
+    {
+        return shape == FilterShape::Bell
+            || shape == FilterShape::LowShelf
+            || shape == FilterShape::HighShelf
+            || shape == FilterShape::TiltShelf;
+    }
+
     void prepare(double newSampleRate)
     {
         sampleRate = juce::jmax(8000.0, newSampleRate);
         reset();
-        updateCoefficients(currentParams, 0.0f);
+        updateCoefficients(currentParams, 0.0f, 1.0f);
     }
 
     void reset()
@@ -64,6 +78,7 @@ public:
         for (auto& s : stagesL) s.reset();
         for (auto& s : stagesR) s.reset();
         envLevel = 0.0f;
+        autoThreshEnvDb = -24.0f;
         currentDynamicGainDb = 0.0f;
     }
 
@@ -82,7 +97,7 @@ public:
         return currentDynamicGainDb;
     }
 
-    void processBlock(float* left, float* right, int numSamples)
+    void processBlock(float* left, float* right, int numSamples, float gainScale = 1.0f)
     {
         if (!currentParams.enabled || numSamples <= 0)
         {
@@ -90,6 +105,7 @@ public:
             return;
         }
 
+        const float clampedScale = juce::jlimit(0.0f, 2.0f, gainScale);
         float appliedDynDb = 0.0f;
 
         if (currentParams.dynamicEnabled)
@@ -111,8 +127,16 @@ public:
             }
 
             const float levelDb = juce::Decibels::gainToDecibels(peakEnv + 1.0e-7f);
-            const float overDb = juce::jmax(0.0f, levelDb - currentParams.dynThresholdDb);
-            const float ratioFactor = juce::jlimit(0.0f, 1.0f, overDb / 18.0f);
+
+            float effectiveThreshDb = currentParams.dynThresholdDb;
+            if (currentParams.autoThreshold)
+            {
+                autoThreshEnvDb = 0.985f * autoThreshEnvDb + 0.015f * juce::jlimit(-54.0f, -6.0f, levelDb - 6.0f);
+                effectiveThreshDb = autoThreshEnvDb;
+            }
+
+            const float overDb = juce::jmax(0.0f, levelDb - effectiveThreshDb);
+            const float ratioFactor = juce::jlimit(0.0f, 1.0f, overDb / 16.0f);
             appliedDynDb = currentParams.dynRangeDb * ratioFactor;
         }
         else
@@ -121,15 +145,15 @@ public:
             appliedDynDb = 0.0f;
         }
 
-        currentDynamicGainDb = appliedDynDb;
-        updateCoefficients(currentParams, appliedDynDb);
+        currentDynamicGainDb = appliedDynDb * clampedScale;
+        updateCoefficients(currentParams, appliedDynDb, clampedScale);
 
         const int numActiveStages = getActiveStageCount(currentParams);
 
         for (int i = 0; i < numSamples; ++i)
         {
-            float inL = left[i];
-            float inR = right[i];
+            const float inL = left[i];
+            const float inR = right[i];
 
             float procL = inL;
             float procR = inR;
@@ -157,7 +181,6 @@ public:
 
                 case ChannelRoute::Mid:
                 {
-                    const float midIn = 0.5f * (inL + inR);
                     const float sideIn = 0.5f * (inL - inR);
                     const float midProc = 0.5f * (procL + procR);
                     left[i] = midProc + sideIn;
@@ -177,7 +200,7 @@ public:
         }
     }
 
-    float getMagnitudeDbAtFrequency(double freq) const noexcept
+    float getMagnitudeDbAtFrequency(double freq, float gainScale = 1.0f) const noexcept
     {
         if (!currentParams.enabled)
             return 0.0f;
@@ -190,9 +213,12 @@ public:
         double totalMagSq = 1.0;
         const int numActiveStages = getActiveStageCount(currentParams);
 
+        BiquadCoeffs evalCoeffs[4];
+        computeCoeffsInternal(currentParams, currentDynamicGainDb, juce::jlimit(0.0f, 2.0f, gainScale), evalCoeffs);
+
         for (int st = 0; st < numActiveStages; ++st)
         {
-            const auto& c = coeffs[static_cast<size_t>(st)];
+            const auto& c = evalCoeffs[st];
             const std::complex<double> num = static_cast<double>(c.b0)
                                            + static_cast<double>(c.b1) * zInv1
                                            + static_cast<double>(c.b2) * zInv2;
@@ -244,11 +270,12 @@ private:
         return 1;
     }
 
-    void updateCoefficients(const BandParams& p, float dynamicGainOffsetDb)
+    void computeCoeffsInternal(const BandParams& p, float dynamicGainOffsetDb, float gainScale, BiquadCoeffs out[4]) const noexcept
     {
         const double f0 = juce::jlimit(15.0, sampleRate * 0.48, static_cast<double>(p.freqHz));
         const double qVal = juce::jlimit(0.1, 24.0, static_cast<double>(p.q));
-        const double totalGainDb = juce::jlimit(-36.0, 36.0, static_cast<double>(p.gainDb + dynamicGainOffsetDb));
+        const double baseGain = supportsGain(p.shape) ? static_cast<double>(p.gainDb) : 0.0;
+        const double totalGainDb = juce::jlimit(-36.0, 36.0, (baseGain + static_cast<double>(dynamicGainOffsetDb)) * static_cast<double>(gainScale));
 
         const double w0 = 2.0 * juce::MathConstants<double>::pi * f0 / sampleRate;
         const double cosW0 = std::cos(w0);
@@ -279,105 +306,4 @@ private:
                     }
                     case FilterShape::LowShelf:
                     {
-                        const double sqrtA2Alpha = 2.0 * std::sqrt(A) * alpha;
-                        b0 = A * ((A + 1.0) - (A - 1.0) * cosW0 + sqrtA2Alpha);
-                        b1 = 2.0 * A * ((A - 1.0) - (A + 1.0) * cosW0);
-                        b2 = A * ((A + 1.0) - (A - 1.0) * cosW0 - sqrtA2Alpha);
-                        a0 = (A + 1.0) + (A - 1.0) * cosW0 + sqrtA2Alpha;
-                        a1 = -2.0 * ((A - 1.0) + (A + 1.0) * cosW0);
-                        a2 = (A + 1.0) + (A - 1.0) * cosW0 - sqrtA2Alpha;
-                        break;
-                    }
-                    case FilterShape::HighShelf:
-                    {
-                        const double sqrtA2Alpha = 2.0 * std::sqrt(A) * alpha;
-                        b0 = A * ((A + 1.0) + (A - 1.0) * cosW0 + sqrtA2Alpha);
-                        b1 = -2.0 * A * ((A - 1.0) + (A + 1.0) * cosW0);
-                        b2 = A * ((A + 1.0) + (A - 1.0) * cosW0 - sqrtA2Alpha);
-                        a0 = (A + 1.0) - (A - 1.0) * cosW0 + sqrtA2Alpha;
-                        a1 = 2.0 * ((A - 1.0) - (A + 1.0) * cosW0);
-                        a2 = (A + 1.0) - (A - 1.0) * cosW0 - sqrtA2Alpha;
-                        break;
-                    }
-                    case FilterShape::LowCut:
-                    {
-                        const double stageQ = (stages == 1) ? qVal : (0.5411961 + 0.15 * st);
-                        const double stageAlpha = sinW0 / (2.0 * stageQ);
-                        b0 = (1.0 + cosW0) * 0.5;
-                        b1 = -(1.0 + cosW0);
-                        b2 = (1.0 + cosW0) * 0.5;
-                        a0 = 1.0 + stageAlpha;
-                        a1 = -2.0 * cosW0;
-                        a2 = 1.0 - stageAlpha;
-                        break;
-                    }
-                    case FilterShape::HighCut:
-                    {
-                        const double stageQ = (stages == 1) ? qVal : (0.5411961 + 0.15 * st);
-                        const double stageAlpha = sinW0 / (2.0 * stageQ);
-                        b0 = (1.0 - cosW0) * 0.5;
-                        b1 = 1.0 - cosW0;
-                        b2 = (1.0 - cosW0) * 0.5;
-                        a0 = 1.0 + stageAlpha;
-                        a1 = -2.0 * cosW0;
-                        a2 = 1.0 - stageAlpha;
-                        break;
-                    }
-                    case FilterShape::Notch:
-                    {
-                        b0 = 1.0;
-                        b1 = -2.0 * cosW0;
-                        b2 = 1.0;
-                        a0 = 1.0 + alpha;
-                        a1 = -2.0 * cosW0;
-                        a2 = 1.0 - alpha;
-                        break;
-                    }
-                    case FilterShape::BandPass:
-                    {
-                        b0 = alpha;
-                        b1 = 0.0;
-                        b2 = -alpha;
-                        a0 = 1.0 + alpha;
-                        a1 = -2.0 * cosW0;
-                        a2 = 1.0 - alpha;
-                        break;
-                    }
-                    case FilterShape::TiltShelf:
-                    {
-                        const double halfA = std::pow(10.0, (totalGainDb * 0.5) / 40.0);
-                        const double sqrtA2Alpha = 2.0 * std::sqrt(halfA) * alpha;
-                        b0 = halfA * ((halfA + 1.0) + (halfA - 1.0) * cosW0 + sqrtA2Alpha);
-                        b1 = -2.0 * halfA * ((halfA - 1.0) + (halfA + 1.0) * cosW0);
-                        b2 = halfA * ((halfA + 1.0) + (halfA - 1.0) * cosW0 - sqrtA2Alpha);
-                        a0 = (halfA + 1.0) - (halfA - 1.0) * cosW0 + sqrtA2Alpha;
-                        a1 = 2.0 * ((halfA - 1.0) - (halfA + 1.0) * cosW0);
-                        a2 = (halfA + 1.0) - (halfA - 1.0) * cosW0 - sqrtA2Alpha;
-                        break;
-                    }
-                }
-            }
-
-            BiquadCoeffs norm;
-            norm.b0 = static_cast<float>(b0 / a0);
-            norm.b1 = static_cast<float>(b1 / a0);
-            norm.b2 = static_cast<float>(b2 / a0);
-            norm.a1 = static_cast<float>(a1 / a0);
-            norm.a2 = static_cast<float>(a2 / a0);
-
-            coeffs[static_cast<size_t>(st)] = norm;
-            stagesL[static_cast<size_t>(st)].c = norm;
-            stagesR[static_cast<size_t>(st)].c = norm;
-        }
-    }
-
-    double sampleRate = 48000.0;
-    BandParams currentParams;
-    std::array<BiquadCoeffs, 4> coeffs {};
-    std::array<BiquadState, 4> stagesL {};
-    std::array<BiquadState, 4> stagesR {};
-    float envLevel = 0.0f;
-    float currentDynamicGainDb = 0.0f;
-};
-
-} // namespace dspcore
+                        const
