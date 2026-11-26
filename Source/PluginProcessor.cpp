@@ -1,204 +1,243 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-HybridResonanceEQAudioProcessor::HybridResonanceEQAudioProcessor()
-    : AudioProcessor(BusesProperties()
-                     .withInput("Input", juce::AudioChannelSet::stereo(), true)
-                     .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts(*this, nullptr, "PARAMS", createParameterLayout())
+namespace
 {
-    for (auto& buf : spectrumBuffers)
-        buf.fill(-120.0f);
-    for (auto& buf : dynBuffers)
-        buf.fill(0.0f);
+juce::String bandParamId(int bandIndex, const juce::String& suffix)
+{
+    return "band_" + juce::String(bandIndex) + "_" + suffix;
+}
+} // namespace
+
+HybridResonanceEQProcessor::HybridResonanceEQProcessor()
+    : AudioProcessor(BusesProperties()
+                         .withInput("Input", juce::AudioChannelSet::stereo(), true)
+                         .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+      apvts(*this, nullptr, "PARAMETERS", createParameterLayout())
+{
 }
 
-juce::AudioProcessorValueTreeState::ParameterLayout HybridResonanceEQAudioProcessor::createParameterLayout()
+juce::AudioProcessorValueTreeState::ParameterLayout HybridResonanceEQProcessor::createParameterLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
-    // 16 bandas estilo Pro-Q 4
-    for (int b = 0; b < kNumBands; ++b)
+    const std::array<float, 16> defaultFreqs {
+        60.0f, 120.0f, 250.0f, 500.0f, 1000.0f, 2000.0f, 4000.0f, 8000.0f,
+        12000.0f, 90.0f, 350.0f, 750.0f, 1500.0f, 3000.0f, 6000.0f, 10000.0f
+    };
+
+    for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
     {
-        const bool defaultEnabled = (b < 4);
-        const float defaultFreq = (b == 0) ? 80.0f
-                                : (b == 1) ? 350.0f
-                                : (b == 2) ? 1800.0f
-                                : (b == 3) ? 6500.0f
-                                : 1000.0f;
+        const juce::String prefix = "Band " + juce::String(i + 1) + " ";
 
         params.push_back(std::make_unique<juce::AudioParameterBool>(
-            bandEnabledId(b), "Band " + juce::String(b + 1) + " Enable", defaultEnabled));
+            bandParamId(i, "enabled"), prefix + "Enabled", i == 0));
+
         params.push_back(std::make_unique<juce::AudioParameterBool>(
-            bandSoloId(b), "Band " + juce::String(b + 1) + " Solo", false));
+            bandParamId(i, "solo"), prefix + "Solo", false));
+
         params.push_back(std::make_unique<juce::AudioParameterBool>(
-            bandDynEnId(b), "Band " + juce::String(b + 1) + " Dynamic", false));
+            bandParamId(i, "dyn_enabled"), prefix + "Dynamic", false));
 
         params.push_back(std::make_unique<juce::AudioParameterChoice>(
-            bandTypeId(b), "Band " + juce::String(b + 1) + " Type",
-            juce::StringArray { "Bell", "Low Shelf", "High Shelf", "Low Cut", "High Cut", "Notch" }, 0));
+            bandParamId(i, "shape"), prefix + "Shape",
+            juce::StringArray { "Bell", "Low Shelf", "High Shelf", "Low Cut", "High Cut", "Notch", "Band Pass", "Tilt Shelf" }, 0));
 
         params.push_back(std::make_unique<juce::AudioParameterChoice>(
-            bandRouteId(b), "Band " + juce::String(b + 1) + " Route",
-            juce::StringArray { "Stereo", "Left", "Right", "Mid", "Side" }, 0));
+            bandParamId(i, "route"), prefix + "Route",
+            juce::StringArray { "Stereo", "Mid", "Side", "Left", "Right" }, 0));
 
-        auto freqRange = juce::NormalisableRange<float>(20.0f, 20000.0f, 0.1f, 0.25f);
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
-            bandFreqId(b), "Band " + juce::String(b + 1) + " Freq", freqRange, defaultFreq));
+            bandParamId(i, "freq"), prefix + "Freq",
+            juce::NormalisableRange<float>(20.0f, 20000.0f, 0.1f, 0.25f),
+            defaultFreqs[static_cast<size_t>(i)]));
 
-        auto gainRange = juce::NormalisableRange<float>(-24.0f, 24.0f, 0.05f);
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
-            bandGainId(b), "Band " + juce::String(b + 1) + " Gain", gainRange, 0.0f));
+            bandParamId(i, "gain"), prefix + "Gain",
+            juce::NormalisableRange<float>(-30.0f, 30.0f, 0.05f), 0.0f));
 
-        auto qRange = juce::NormalisableRange<float>(0.15f, 12.0f, 0.01f, 0.4f);
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
-            bandQId(b), "Band " + juce::String(b + 1) + " Q", qRange, 1.0f));
+            bandParamId(i, "q"), prefix + "Q",
+            juce::NormalisableRange<float>(0.15f, 20.0f, 0.01f, 0.35f), 1.0f));
 
-        auto thrRange = juce::NormalisableRange<float>(-60.0f, 0.0f, 0.1f);
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
-            bandThreshId(b), "Band " + juce::String(b + 1) + " Threshold", thrRange, -18.0f));
+            bandParamId(i, "slope"), prefix + "Slope",
+            juce::NormalisableRange<float>(6.0f, 48.0f, 6.0f), 12.0f));
 
-        auto rngRange = juce::NormalisableRange<float>(-18.0f, 18.0f, 0.1f);
         params.push_back(std::make_unique<juce::AudioParameterFloat>(
-            bandRangeId(b), "Band " + juce::String(b + 1) + " Dyn Range", rngRange, -6.0f));
+            bandParamId(i, "dyn_range"), prefix + "Dyn Range",
+            juce::NormalisableRange<float>(-24.0f, 24.0f, 0.1f), -6.0f));
+
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            bandParamId(i, "dyn_thresh"), prefix + "Dyn Thresh",
+            juce::NormalisableRange<float>(-60.0f, 0.0f, 0.1f), -24.0f));
     }
 
-    // Motor espectral de resonancias estilo Soothe 3
+    // Spectral Resonance Suppression
+    params.push_back(std::make_unique<juce::AudioParameterBool>("spec_enabled", "Spectral Enabled", true));
+    params.push_back(std::make_unique<juce::AudioParameterBool>("spec_delta", "Spectral Delta", false));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        "spec_depth", "Spectral Depth",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.55f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        "spec_sharpness", "Spectral Sharpness",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.60f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        "spec_smoothing", "Spectral Smoothing",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.55f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        "spec_mix", "Spectral Mix",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 1.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        "spec_min_freq", "Spectral Min Freq",
+        juce::NormalisableRange<float>(20.0f, 5000.0f, 1.0f, 0.3f), 60.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        "spec_max_freq", "Spectral Max Freq",
+        juce::NormalisableRange<float>(1000.0f, 20000.0f, 1.0f, 0.3f), 18000.0f));
+
+    // Opciones del analizador estilo Pro-Q 4
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        "ana_resolution", "Analyzer Resolution",
+        juce::StringArray { "Low", "Medium", "High", "Max" }, 2));
+
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        "ana_speed", "Analyzer Speed",
+        juce::StringArray { "Slow", "Medium", "Fast" }, 1));
+
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        "ana_tilt", "Analyzer Tilt",
+        juce::StringArray { "0 dB/oct", "3 dB/oct", "4.5 dB/oct", "6 dB/oct" }, 2));
+
     params.push_back(std::make_unique<juce::AudioParameterBool>(
-        "spec_en", "Spectral Enable", true));
+        "ana_show_pre", "Show Pre Spectrum", true));
+
     params.push_back(std::make_unique<juce::AudioParameterBool>(
-        "spec_delta", "Spectral Delta", false));
+        "ana_show_post", "Show Post Spectrum", true));
+
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        "display_range", "Display Range",
+        juce::StringArray { "+/- 6 dB", "+/- 12 dB", "+/- 30 dB" }, 1));
+
+    // Salida global
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
-        "spec_depth", "Spectral Depth", juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.55f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(
-        "spec_sharp", "Spectral Sharpness", juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.60f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(
-        "spec_smooth", "Spectral Smoothing", juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.50f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(
-        "spec_mix", "Spectral Mix", juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 1.0f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(
-        "spec_low", "Spectral Low Hz", juce::NormalisableRange<float>(30.0f, 4000.0f, 1.0f, 0.35f), 120.0f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>(
-        "spec_high", "Spectral High Hz", juce::NormalisableRange<float>(500.0f, 20000.0f, 1.0f, 0.35f), 16000.0f));
+        "output_gain", "Output Gain",
+        juce::NormalisableRange<float>(-24.0f, 24.0f, 0.05f), 0.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        "global_bypass", "Bypass", false));
 
     return { params.begin(), params.end() };
 }
 
-bool HybridResonanceEQAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
+void HybridResonanceEQProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
-    if (layouts.getMainInputChannelSet() != juce::AudioChannelSet::stereo() ||
-        layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
-        return false;
-
-    return true;
-}
-
-void HybridResonanceEQAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
-{
+    currentSampleRate = sampleRate;
     eqEngine.prepare(sampleRate, samplesPerBlock);
     spectralEngine.prepare(sampleRate, samplesPerBlock);
-    syncEnginesFromParameters();
+    syncParametersToDSP();
     setLatencySamples(spectralEngine.getLatencySamples());
 }
 
-void HybridResonanceEQAudioProcessor::syncEnginesFromParameters() noexcept
+void HybridResonanceEQProcessor::releaseResources()
 {
-    for (int b = 0; b < kNumBands; ++b)
-    {
-        dspcore::BandConfig cfg;
-        cfg.enabled = apvts.getRawParameterValue(bandEnabledId(b))->load() > 0.5f;
-        cfg.solo    = apvts.getRawParameterValue(bandSoloId(b))->load() > 0.5f;
-        cfg.dynamicEnabled = apvts.getRawParameterValue(bandDynEnId(b))->load() > 0.5f;
-
-        cfg.type = static_cast<dspcore::BandType>(
-            static_cast<int>(apvts.getRawParameterValue(bandTypeId(b))->load()));
-        cfg.route = static_cast<dspcore::ChannelRoute>(
-            static_cast<int>(apvts.getRawParameterValue(bandRouteId(b))->load()));
-
-        cfg.freqHz = apvts.getRawParameterValue(bandFreqId(b))->load();
-        cfg.gainDb = apvts.getRawParameterValue(bandGainId(b))->load();
-        cfg.q      = apvts.getRawParameterValue(bandQId(b))->load();
-        cfg.thresholdDb = apvts.getRawParameterValue(bandThreshId(b))->load();
-        cfg.dynamicRangeDb = apvts.getRawParameterValue(bandRangeId(b))->load();
-
-        eqEngine.setBandConfig(b, cfg);
-    }
-
-    dspcore::SpectralConfig sCfg;
-    sCfg.enabled     = apvts.getRawParameterValue("spec_en")->load() > 0.5f;
-    sCfg.deltaListen = apvts.getRawParameterValue("spec_delta")->load() > 0.5f;
-    sCfg.depth       = apvts.getRawParameterValue("spec_depth")->load();
-    sCfg.sharpness   = apvts.getRawParameterValue("spec_sharp")->load();
-    sCfg.smoothing   = apvts.getRawParameterValue("spec_smooth")->load();
-    sCfg.mix         = apvts.getRawParameterValue("spec_mix")->load();
-    sCfg.minFreqHz   = apvts.getRawParameterValue("spec_low")->load();
-    sCfg.maxFreqHz   = apvts.getRawParameterValue("spec_high")->load();
-
-    spectralEngine.setConfig(sCfg);
+    eqEngine.reset();
 }
 
-void HybridResonanceEQAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+bool HybridResonanceEQProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
+{
+    return layouts.getMainInputChannelSet() == juce::AudioChannelSet::stereo()
+        && layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
+}
+
+void HybridResonanceEQProcessor::syncParametersToDSP()
+{
+    for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
+    {
+        dspcore::BandParams p;
+        p.enabled = apvts.getRawParameterValue(bandParamId(i, "enabled"))->load() > 0.5f;
+        p.solo = apvts.getRawParameterValue(bandParamId(i, "solo"))->load() > 0.5f;
+        p.dynamicEnabled = apvts.getRawParameterValue(bandParamId(i, "dyn_enabled"))->load() > 0.5f;
+        p.shape = static_cast<dspcore::FilterShape>(static_cast<int>(apvts.getRawParameterValue(bandParamId(i, "shape"))->load()));
+        p.route = static_cast<dspcore::ChannelRoute>(static_cast<int>(apvts.getRawParameterValue(bandParamId(i, "route"))->load()));
+        p.freqHz = apvts.getRawParameterValue(bandParamId(i, "freq"))->load();
+        p.gainDb = apvts.getRawParameterValue(bandParamId(i, "gain"))->load();
+        p.q = apvts.getRawParameterValue(bandParamId(i, "q"))->load();
+        p.slopeDbOct = apvts.getRawParameterValue(bandParamId(i, "slope"))->load();
+        p.dynRangeDb = apvts.getRawParameterValue(bandParamId(i, "dyn_range"))->load();
+        p.dynThresholdDb = apvts.getRawParameterValue(bandParamId(i, "dyn_thresh"))->load();
+
+        eqEngine.setBandParameters(i, p);
+    }
+
+    dspcore::SpectralConfig sc;
+    sc.enabled = apvts.getRawParameterValue("spec_enabled")->load() > 0.5f;
+    sc.deltaListen = apvts.getRawParameterValue("spec_delta")->load() > 0.5f;
+    sc.depth = apvts.getRawParameterValue("spec_depth")->load();
+    sc.sharpness = apvts.getRawParameterValue("spec_sharpness")->load();
+    sc.smoothing = apvts.getRawParameterValue("spec_smoothing")->load();
+    sc.mix = apvts.getRawParameterValue("spec_mix")->load();
+    sc.minFreqHz = apvts.getRawParameterValue("spec_min_freq")->load();
+    sc.maxFreqHz = apvts.getRawParameterValue("spec_max_freq")->load();
+
+    sc.resolution = static_cast<dspcore::AnalyzerResolution>(static_cast<int>(apvts.getRawParameterValue("ana_resolution")->load()));
+    sc.speed = static_cast<dspcore::AnalyzerSpeed>(static_cast<int>(apvts.getRawParameterValue("ana_speed")->load()));
+
+    const int tiltIdx = static_cast<int>(apvts.getRawParameterValue("ana_tilt")->load());
+    constexpr std::array<float, 4> tiltValues { 0.0f, 3.0f, 4.5f, 6.0f };
+    sc.tiltDbPerOct = tiltValues[static_cast<size_t>(juce::jlimit(0, 3, tiltIdx))];
+
+    spectralEngine.setConfig(sc);
+}
+
+void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
 
-    const int totalNumInputChannels  = getTotalNumInputChannels();
-    const int totalNumOutputChannels = getTotalNumOutputChannels();
+    syncParametersToDSP();
+    setLatencySamples(spectralEngine.getLatencySamples());
 
-    for (int i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
-        buffer.clear(i, 0, buffer.getNumSamples());
-
-    syncEnginesFromParameters();
-
-    const int expectedLatency = spectralEngine.getLatencySamples();
-    if (getLatencySamples() != expectedLatency)
-        setLatencySamples(expectedLatency);
+    const bool bypassed = apvts.getRawParameterValue("global_bypass")->load() > 0.5f;
+    if (bypassed)
+        return;
 
     eqEngine.processBlock(buffer);
     spectralEngine.processBlock(buffer);
 
-    // Publica espectro y offsets dinámicos en doble buffer para la GUI (30 FPS)
-    spectralEngine.getMagnitudeSpectrumDb(spectrumBuffers[static_cast<size_t>(spectrumWriteIndex)]);
-    activeSpectrumReadIndex.store(spectrumWriteIndex, std::memory_order_release);
-    spectrumWriteIndex = (spectrumWriteIndex == 0) ? 1 : 0;
-
-    for (int b = 0; b < kNumBands; ++b)
-        dynBuffers[static_cast<size_t>(dynWriteIndex)][static_cast<size_t>(b)] = eqEngine.getBandDynamicGainDb(b);
-    activeDynReadIndex.store(dynWriteIndex, std::memory_order_release);
-    dynWriteIndex = (dynWriteIndex == 0) ? 1 : 0;
+    const float outGainDb = apvts.getRawParameterValue("output_gain")->load();
+    if (std::abs(outGainDb) > 0.01f)
+    {
+        buffer.applyGain(juce::Decibels::decibelsToGain(outGainDb));
+    }
 }
 
-void HybridResonanceEQAudioProcessor::copyLatestSpectrumDb(std::array<float, kSpectrumBins>& dest) const noexcept
+juce::AudioProcessorEditor* HybridResonanceEQProcessor::createEditor()
 {
-    const int idx = activeSpectrumReadIndex.load(std::memory_order_acquire);
-    dest = spectrumBuffers[static_cast<size_t>(idx)];
+    return new HybridResonanceEQEditor(*this);
 }
 
-void HybridResonanceEQAudioProcessor::copyLatestDynamicOffsets(std::array<float, kNumBands>& dest) const noexcept
-{
-    const int idx = activeDynReadIndex.load(std::memory_order_acquire);
-    dest = dynBuffers[static_cast<size_t>(idx)];
-}
-
-juce::AudioProcessorEditor* HybridResonanceEQAudioProcessor::createEditor()
-{
-    return new HybridResonanceEQAudioProcessorEditor(*this);
-}
-
-void HybridResonanceEQAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
+void HybridResonanceEQProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     copyXmlToBinary(*xml, destData);
 }
 
-void HybridResonanceEQAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
+void HybridResonanceEQProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
     std::unique_ptr<juce::XmlElement> xmlState(getXmlFromBinary(data, sizeInBytes));
     if (xmlState != nullptr && xmlState->hasTagName(apvts.state.getType()))
+    {
         apvts.replaceState(juce::ValueTree::fromXml(*xmlState));
+    }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
-    return new HybridResonanceEQAudioProcessor();
+    return new HybridResonanceEQProcessor();
 }
