@@ -9,12 +9,13 @@ namespace dspcore
 class ParametricEQEngine
 {
 public:
-    static constexpr int kNumBands = 16;
+    static constexpr int maxBands = 16;
 
-    void prepare(double sampleRate, int maxBlockSize)
+    void prepare(double newSampleRate, int /*maxBlockSize*/)
     {
+        sampleRate = newSampleRate;
         for (auto& band : bands)
-            band.prepare(sampleRate, maxBlockSize);
+            band.prepare(newSampleRate);
     }
 
     void reset()
@@ -23,95 +24,85 @@ public:
             band.reset();
     }
 
-    void setBandConfig(int index, const BandConfig& cfg) noexcept
+    void setBandParameters(int index, const BandParams& params)
     {
-        if (index >= 0 && index < kNumBands)
-            bands[static_cast<size_t>(index)].setConfig(cfg);
+        if (index >= 0 && index < maxBands)
+            bands[static_cast<size_t>(index)].setParameters(params);
     }
 
-    const BandConfig& getBandConfig(int index) const noexcept
+    const BandParams& getBandParameters(int index) const noexcept
     {
-        static const BandConfig emptyCfg;
-        if (index >= 0 && index < kNumBands)
-            return bands[static_cast<size_t>(index)].getConfig();
-        return emptyCfg;
+        return bands[static_cast<size_t>(juce::jlimit(0, maxBands - 1, index))].getParameters();
     }
 
     float getBandDynamicGainDb(int index) const noexcept
     {
-        if (index >= 0 && index < kNumBands)
+        if (index >= 0 && index < maxBands)
             return bands[static_cast<size_t>(index)].getCurrentDynamicGainDb();
         return 0.0f;
     }
 
-    float getTotalMagnitudeDb(float freqHz) const noexcept
-    {
-        float sumDb = 0.0f;
-        for (const auto& band : bands)
-            sumDb += band.getMagnitudeDb(freqHz);
-        return sumDb;
-    }
-
-    void processBlock(juce::AudioBuffer<float>& buffer) noexcept
+    void processBlock(juce::AudioBuffer<float>& buffer)
     {
         const int numSamples = buffer.getNumSamples();
         const int numChannels = buffer.getNumChannels();
         if (numSamples <= 0 || numChannels < 2)
             return;
 
-        bool anySolo = false;
-        for (const auto& band : bands)
+        int soloIndex = -1;
+        for (int i = 0; i < maxBands; ++i)
         {
-            if (band.getConfig().enabled && band.getConfig().solo)
+            const auto& p = bands[static_cast<size_t>(i)].getParameters();
+            if (p.enabled && p.solo)
             {
-                anySolo = true;
+                soloIndex = i;
                 break;
             }
         }
 
-        auto* leftPtr = buffer.getWritePointer(0);
-        auto* rightPtr = buffer.getWritePointer(1);
+        auto* left = buffer.getWritePointer(0);
+        auto* right = buffer.getWritePointer(1);
 
-        if (!anySolo)
+        if (soloIndex >= 0)
         {
-            for (int n = 0; n < numSamples; ++n)
-            {
-                float l = leftPtr[n];
-                float r = rightPtr[n];
-                for (auto& band : bands)
-                    band.processSample(l, r);
-                leftPtr[n] = l;
-                rightPtr[n] = r;
-            }
+            BandParams soloBand = bands[static_cast<size_t>(soloIndex)].getParameters();
+            soloBand.shape = FilterShape::BandPass;
+            soloBand.q = juce::jlimit(0.5f, 16.0f, soloBand.q * 1.5f);
+            soloMonitorFilter.prepare(sampleRate);
+            soloMonitorFilter.setParameters(soloBand);
+            soloMonitorFilter.processBlock(left, right, numSamples);
             return;
         }
 
-        for (int n = 0; n < numSamples; ++n)
+        for (int i = 0; i < maxBands; ++i)
         {
-            const float dryL = leftPtr[n];
-            const float dryR = rightPtr[n];
-            float soloSumL = 0.0f;
-            float soloSumR = 0.0f;
-
-            for (auto& band : bands)
-            {
-                if (band.getConfig().enabled && band.getConfig().solo)
-                {
-                    float tl = dryL;
-                    float tr = dryR;
-                    band.processSample(tl, tr);
-                    soloSumL += tl;
-                    soloSumR += tr;
-                }
-            }
-
-            leftPtr[n] = soloSumL;
-            rightPtr[n] = soloSumR;
+            bands[static_cast<size_t>(i)].processBlock(left, right, numSamples);
         }
     }
 
+    float getBandResponseDb(int bandIndex, double freqHz) const noexcept
+    {
+        if (bandIndex < 0 || bandIndex >= maxBands)
+            return 0.0f;
+        return bands[static_cast<size_t>(bandIndex)].getMagnitudeDbAtFrequency(freqHz);
+    }
+
+    float getCombinedResponseDb(double freqHz) const noexcept
+    {
+        float sumDb = 0.0f;
+        for (int i = 0; i < maxBands; ++i)
+        {
+            const auto& p = bands[static_cast<size_t>(i)].getParameters();
+            if (p.enabled)
+                sumDb += bands[static_cast<size_t>(i)].getMagnitudeDbAtFrequency(freqHz);
+        }
+        return juce::jlimit(-48.0f, 48.0f, sumDb);
+    }
+
 private:
-    std::array<BandFilter, kNumBands> bands;
+    double sampleRate = 48000.0;
+    std::array<BandFilter, maxBands> bands;
+    BandFilter soloMonitorFilter;
 };
 
 } // namespace dspcore
