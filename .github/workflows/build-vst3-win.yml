@@ -21,11 +21,19 @@ jobs:
       - name: Configure JUCE VST3 (x64)
         shell: pwsh
         run: |
-          cmake -B build -A x64 -DCMAKE_BUILD_TYPE=Release
+          $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $devCmd = Join-Path $installPath "Common7\Tools\Launch-VsDevShell.ps1"
+          & $devCmd -Arch amd64 -HostArch amd64
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build Release VST3
         shell: pwsh
         run: |
+          $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $devCmd = Join-Path $installPath "Common7\Tools\Launch-VsDevShell.ps1"
+          & $devCmd -Arch amd64 -HostArch amd64
           cmake --build build --config Release --parallel
 
       - name: Collect VST3 artifact
