@@ -19,24 +19,27 @@ jobs:
           cmake-version: "3.28.x"
 
       - name: Configure JUCE VST3 (x64)
-        shell: cmd
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+        shell: pwsh
+        run: |
+          cmake -B build -A x64 -DCMAKE_BUILD_TYPE=Release
 
       - name: Build Release VST3
-        shell: cmd
-        run: cmake --build build --config Release --parallel
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel
 
       - name: Collect VST3 artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifact_out | Out-Null
-          Get-ChildItem -Path build -Filter "*.vst3" -Directory -Recurse | ForEach-Object {
-            Copy-Item -Path $_.FullName -Destination "artifact_out/$($_.Name)" -Recurse -Force
+          $vst3 = Get-ChildItem -Path build -Recurse -Directory -Filter "*.vst3" | Select-Object -First 1
+          if (-not $vst3) {
+            throw "No .vst3 bundle was produced!"
           }
+          Copy-Item -Path $vst3.FullName -Destination "artifact_out\$($vst3.Name)" -Recurse -Force
 
       - name: Upload VST3 Artifact
         uses: actions/upload-artifact@v4
         with:
           name: HybridResonanceEQ-Windows-VST3
-          path: artifact_out/
-          if-no-files-found: error
+          path: artifact_out/*
