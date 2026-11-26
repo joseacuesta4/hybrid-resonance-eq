@@ -231,8 +231,8 @@ private:
             fftWorkR[static_cast<size_t>(imIdx)] *= g;
         }
 
-        fft.performRealOnlyInverseTransform(fftWorkL.data(), true);
-        fft.performRealOnlyInverseTransform(fftWorkR.data(), true);
+        fft.performRealOnlyInverseTransform(fftWorkL.data();
+        fft.performRealOnlyInverseTransform(fftWorkR.data();
 
         constexpr float olaScale = 1.0f / 1.5f;
 
