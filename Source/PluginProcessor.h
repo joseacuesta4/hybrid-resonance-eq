@@ -45,14 +45,19 @@ public:
         spectralEngine.getSpectra(outPreDb, outPostDb, outReductionDb);
     }
 
+    float getGainScale() const noexcept
+    {
+        return apvts.getRawParameterValue("gain_scale")->load();
+    }
+
     float getCombinedEQResponseDb(double freqHz) const noexcept
     {
-        return eqEngine.getCombinedResponseDb(freqHz);
+        return eqEngine.getCombinedResponseDb(freqHz, getGainScale());
     }
 
     float getBandEQResponseDb(int bandIndex, double freqHz) const noexcept
     {
-        return eqEngine.getBandResponseDb(bandIndex, freqHz);
+        return eqEngine.getBandResponseDb(bandIndex, freqHz, getGainScale());
     }
 
     float getBandDynamicGainDb(int bandIndex) const noexcept
@@ -63,7 +68,15 @@ public:
     double getCurrentSampleRateHz() const noexcept { return currentSampleRate; }
 
 private:
+    enum class CharacterMode : int
+    {
+        Clean = 0,
+        Subtle,
+        Warm
+    };
+
     void syncParametersToDSP();
+    void applyCharacterAndOutput(juce::AudioBuffer<float>& buffer, CharacterMode mode, float outGainDb, bool phaseInvert) noexcept;
 
     dspcore::ParametricEQEngine eqEngine;
     dspcore::SpectralResonanceEngine spectralEngine;
