@@ -9,10 +9,10 @@ namespace dspcore
 
 enum class AnalyzerResolution : int
 {
-    Low = 0,     // 1024 bins efectivos
-    Medium,      // 2048
-    High,        // 4096
-    Max          // 4096 alta precisión con promediado fino
+    Low = 0,
+    Medium,
+    High,
+    Max
 };
 
 enum class AnalyzerSpeed : int
@@ -28,12 +28,12 @@ struct SpectralConfig
     bool deltaListen = false;
 
     float depth = 0.55f;
-    float sharpness = 0.60f;
+    float sharpness = 0.65f;
     float smoothing = 0.55f;
     float mix = 1.0f;
 
-    float minFreqHz = 60.0f;
-    float maxFreqHz = 18000.0f;
+    float minFreqHz = 80.0f;
+    float maxFreqHz = 16000.0f;
 
     AnalyzerResolution resolution = AnalyzerResolution::High;
     AnalyzerSpeed speed = AnalyzerSpeed::Medium;
@@ -43,7 +43,7 @@ struct SpectralConfig
 class SpectralResonanceEngine
 {
 public:
-    static constexpr int fftOrder = 12;          // 4096 FFT para alta resolución en graves
+    static constexpr int fftOrder = 12; // 4096 FFT
     static constexpr int fftSize = 1 << fftOrder;
     static constexpr int hopSize = 512;
     static constexpr int numBins = fftSize / 2 + 1;
@@ -177,7 +177,7 @@ private:
     {
         switch (config.speed)
         {
-            case AnalyzerSpeed::Slow:   return 0.90f;
+            case AnalyzerSpeed::Slow:   return 0.91f;
             case AnalyzerSpeed::Medium: return 0.78f;
             case AnalyzerSpeed::Fast:   return 0.55f;
         }
@@ -215,7 +215,7 @@ private:
             magR[static_cast<size_t>(b)] = mR;
         }
 
-        const int halfKernel = juce::jlimit(3, 36, static_cast<int>(std::round(32.0f * (1.0f - 0.75f * config.sharpness))));
+        const int halfKernel = juce::jlimit(4, 40, static_cast<int>(std::round(36.0f * (1.0f - 0.72f * config.sharpness))));
         const float smoothCoeff = juce::jlimit(0.05f, 0.96f, 0.25f + 0.68f * config.smoothing);
         const float depthAmount = config.enabled ? juce::jlimit(0.0f, 1.0f, config.depth) : 0.0f;
         const float wetMix = config.enabled ? juce::jlimit(0.0f, 1.0f, config.mix) : 0.0f;
@@ -227,11 +227,14 @@ private:
         {
             const float freqHz = juce::jmax(1.0f, static_cast<float>(b) * binHzStep);
             const float mCur = 0.5f * (magL[static_cast<size_t>(b)] + magR[static_cast<size_t>(b)]);
+            const float normMag = mCur / static_cast<float>(fftSize);
+            const float instDb = juce::Decibels::gainToDecibels(normMag + 1.0e-8f);
 
             float targetGain = 1.0f;
             float appliedReductionDb = 0.0f;
 
-            if (config.enabled && freqHz >= minHz && freqHz <= maxHz)
+            // Solo actúa sobre resonancias prominentes por encima del piso de ruido (-72 dB) y dentro del rango activo
+            if (config.enabled && freqHz >= minHz && freqHz <= maxHz && instDb > -72.0f)
             {
                 float sumLocal = 0.0f;
                 int countLocal = 0;
@@ -249,21 +252,27 @@ private:
                     smoothCoeff * smoothedEnv[static_cast<size_t>(b)] + (1.0f - smoothCoeff) * localMean;
 
                 const float ratio = mCur / juce::jmax(1.0e-6f, smoothedEnv[static_cast<size_t>(b)]);
-                const float excess = juce::jmax(0.0f, ratio - (1.20f - 0.35f * config.sharpness));
-                const float attenDb = -depthAmount * juce::jlimit(0.0f, 20.0f, excess * 9.0f);
-                targetGain = juce::Decibels::decibelsToGain(attenDb);
+                const float thresholdRatio = 1.45f - 0.35f * config.sharpness;
+                const float excess = juce::jmax(0.0f, ratio - thresholdRatio);
+
+                if (excess > 0.02f)
+                {
+                    const float attenDb = -depthAmount * juce::jlimit(0.0f, 18.0f, excess * 8.5f);
+                    targetGain = juce::Decibels::decibelsToGain(attenDb);
+                }
             }
 
             binGains[static_cast<size_t>(b)] =
                 smoothCoeff * binGains[static_cast<size_t>(b)] + (1.0f - smoothCoeff) * targetGain;
 
             const float effectiveGain = (1.0f - wetMix) + wetMix * binGains[static_cast<size_t>(b)];
-            appliedReductionDb = juce::jlimit(-24.0f, 0.0f, juce::Decibels::gainToDecibels(effectiveGain + 1.0e-6f));
+            const float redDbRaw = juce::jlimit(-24.0f, 0.0f, juce::Decibels::gainToDecibels(effectiveGain + 1.0e-6f));
+            appliedReductionDb = (redDbRaw < -0.25f) ? redDbRaw : 0.0f;
 
             const float octavesFrom1k = std::log2(freqHz / 1000.0f);
             const float tiltOffsetDb = tilt * octavesFrom1k;
 
-            const float rawPreDb = juce::Decibels::gainToDecibels(mCur / static_cast<float>(fftSize) + 1.0e-8f) + tiltOffsetDb;
+            const float rawPreDb = instDb + tiltOffsetDb;
             const float rawPostDb = rawPreDb + appliedReductionDb;
 
             const auto idx = static_cast<size_t>(b);
@@ -287,7 +296,6 @@ private:
         fft.performRealOnlyInverseTransform(fftWorkL.data());
         fft.performRealOnlyInverseTransform(fftWorkR.data());
 
-        // Overlap-add con FFT=4096 y Hop=512 (8x overlap con ventana Hann -> factor 1/3.0)
         constexpr float olaScale = 1.0f / 3.0f;
 
         for (int i = 0; i < fftSize; ++i)
