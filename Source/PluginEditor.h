@@ -42,11 +42,33 @@ public:
     void mouseDoubleClick(const juce::MouseEvent& e) override;
 
 private:
+    struct CopiedBandSnapshot
+    {
+        bool valid = false;
+        bool enabled = true;
+        bool solo = false;
+        bool dynamicEnabled = false;
+        bool autoThreshold = true;
+        int shape = 0;
+        int route = 0;
+        float freq = 1000.0f;
+        float gain = 0.0f;
+        float q = 1.0f;
+        float slope = 12.0f;
+        float dynRange = -6.0f;
+        float dynThresh = -24.0f;
+        float dynAttack = 15.0f;
+        float dynRelease = 120.0f;
+    };
+
     void timerCallback() override;
     void selectBand(int bandIndex);
-    void syncBandControlsFromParams();
+    void updateContextualBandControls();
     void updateBandParamFromGraph(int bandIndex, float freqHz, float gainDb);
     void addNewBandAt(float freqHz, float gainDb);
+    void copySelectedBand();
+    void pasteToSelectedBand();
+    void toggleABState();
 
     float xToFreqHz(float x) const noexcept;
     float freqHzToX(float freqHz) const noexcept;
@@ -68,19 +90,32 @@ private:
     int selectedBandIndex = 0;
     int draggedBandIndex = -1;
 
+    bool activeSlotB = false;
+    juce::MemoryBlock slotAState;
+    juce::MemoryBlock slotBState;
+    CopiedBandSnapshot copiedBand;
+
     // Top bar & Analyzer controls
     juce::ComboBox bandSelectorBox;
     juce::TextButton addBandButton { "+ Band" };
     juce::TextButton delBandButton { "Del" };
+    juce::TextButton copyBandButton { "Copy" };
+    juce::TextButton pasteBandButton { "Paste" };
+    juce::TextButton abButton { "A" };
 
     juce::ComboBox resolutionBox;
     juce::ComboBox speedBox;
     juce::ComboBox tiltBox;
     juce::ComboBox rangeBox;
+    juce::ComboBox characterBox;
 
     juce::ToggleButton showPreToggle { "Pre" };
     juce::ToggleButton showPostToggle { "Post" };
+    juce::ToggleButton phaseInvertToggle { "Ø" };
     juce::ToggleButton bypassToggle { "Bypass" };
+
+    juce::Slider gainScaleSlider;
+    juce::Label gainScaleLabel;
 
     juce::Slider outputGainSlider;
     juce::Label outputGainLabel;
@@ -90,6 +125,7 @@ private:
     juce::ComboBox bandShapeBox;
     juce::ComboBox bandRouteBox;
     juce::ToggleButton bandDynToggle { "Dyn" };
+    juce::ToggleButton bandAutoThreshToggle { "Auto" };
     juce::ToggleButton bandSoloToggle { "Solo" };
 
     juce::Slider bandFreqSlider;
@@ -98,6 +134,8 @@ private:
     juce::Slider bandSlopeSlider;
     juce::Slider bandDynRangeSlider;
     juce::Slider bandDynThreshSlider;
+    juce::Slider bandDynAttackSlider;
+    juce::Slider bandDynReleaseSlider;
 
     juce::Label bandFreqLabel;
     juce::Label bandGainLabel;
@@ -105,6 +143,8 @@ private:
     juce::Label bandSlopeLabel;
     juce::Label bandDynRangeLabel;
     juce::Label bandDynThreshLabel;
+    juce::Label bandDynAttackLabel;
+    juce::Label bandDynReleaseLabel;
 
     // Spectral Resonance controls
     juce::ToggleButton specEnabledToggle { "Spectral" };
@@ -129,10 +169,13 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> speedAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> tiltAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> rangeAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> characterAttach;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> showPreAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> showPostAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> phaseInvertAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> gainScaleAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> outputGainAttach;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> specEnabledAttach;
@@ -148,6 +191,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> bandShapeAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> bandRouteAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bandDynAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bandAutoThreshAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bandSoloAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandFreqAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandGainAttach;
@@ -155,6 +199,8 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandSlopeAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandDynRangeAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandDynThreshAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandDynAttackAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandDynReleaseAttach;
 
     std::array<float, dspcore::SpectralResonanceEngine::numBins> preSpectrumDb {};
     std::array<float, dspcore::SpectralResonanceEngine::numBins> postSpectrumDb {};
