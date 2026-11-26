@@ -239,4 +239,37 @@ private:
         for (int i = 0; i < fftSize; ++i)
         {
             const int idx = (outReadPos + i) % fftSize;
-            outputAccumL[static_cast<size_t>(idx)] += fftWorkL[static_cast
+            outputAccumL[static_cast<size_t>(idx)] += fftWorkL[static_cast<size_t>(i)] * olaScale;
+            outputAccumR[static_cast<size_t>(idx)] += fftWorkR[static_cast<size_t>(i)] * olaScale;
+        }
+    }
+
+    double sampleRate = 48000.0;
+    SpectralConfig config;
+
+    juce::dsp::FFT fft;
+    juce::dsp::WindowingFunction<float> window;
+
+    std::array<float, fftSize> inputFifoL {};
+    std::array<float, fftSize> inputFifoR {};
+    std::array<float, fftSize> outputAccumL {};
+    std::array<float, fftSize> outputAccumR {};
+    std::array<float, fftSize> delayLineL {};
+    std::array<float, fftSize> delayLineR {};
+
+    std::array<float, fftSize * 2> fftWorkL {};
+    std::array<float, fftSize * 2> fftWorkR {};
+
+    std::array<float, numBins> magL {};
+    std::array<float, numBins> magR {};
+    std::array<float, numBins> smoothedEnv {};
+    std::array<float, numBins> binGains {};
+    std::array<float, numBins> latestMagDb {};
+
+    int fifoWritePos = 0;
+    int outReadPos = 0;
+    int delayWritePos = 0;
+    int samplesSinceHop = 0;
+};
+
+} // namespace dspcore
