@@ -1,80 +1,164 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_gui_extra/juce_gui_extra.h>
 #include "PluginProcessor.h"
 #include <array>
 
-class HybridResonanceEQAudioProcessorEditor : public juce::AudioProcessorEditor,
-                                             private juce::Timer
+class ProLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
-    explicit HybridResonanceEQAudioProcessorEditor(HybridResonanceEQAudioProcessor&);
-    ~HybridResonanceEQAudioProcessorEditor() override = default;
+    ProLookAndFeel();
+
+    void drawRotarySlider(juce::Graphics& g, int x, int y, int width, int height,
+                          float sliderPosProportional, float rotaryStartAngle,
+                          float rotaryEndAngle, juce::Slider& slider) override;
+
+    void drawComboBox(juce::Graphics& g, int width, int height, bool isButtonDown,
+                      int buttonX, int buttonY, int buttonW, int buttonH,
+                      juce::ComboBox& box) override;
+
+    void drawToggleButton(juce::Graphics& g, juce::ToggleButton& button,
+                          bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
+
+    void drawButtonBackground(juce::Graphics& g, juce::Button& button,
+                              const juce::Colour& backgroundColour,
+                              bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
+};
+
+class HybridResonanceEQEditor : public juce::AudioProcessorEditor,
+                                  private juce::Timer
+{
+public:
+    explicit HybridResonanceEQEditor(HybridResonanceEQProcessor&);
+    ~HybridResonanceEQEditor() override;
 
     void paint(juce::Graphics&) override;
     void resized() override;
 
-    void mouseDown(const juce::MouseEvent&) override;
-    void mouseDrag(const juce::MouseEvent&) override;
-    void mouseUp(const juce::MouseEvent&) override;
-    void mouseDoubleClick(const juce::MouseEvent&) override;
+    void mouseDown(const juce::MouseEvent& e) override;
+    void mouseDrag(const juce::MouseEvent& e) override;
+    void mouseUp(const juce::MouseEvent& e) override;
+    void mouseDoubleClick(const juce::MouseEvent& e) override;
 
 private:
     void timerCallback() override;
-    void syncControlsToSelectedBand();
+    void selectBand(int bandIndex);
+    void syncBandControlsFromParams();
+    void updateBandParamFromGraph(int bandIndex, float freqHz, float gainDb);
+    void addNewBandAt(float freqHz, float gainDb);
 
-    float freqToX(float freqHz) const noexcept;
-    float xToFreq(float x) const noexcept;
-    float dbToY(float db) const noexcept;
-    float yToDb(float y) const noexcept;
-    float specDbToY(float specDb) const noexcept;
-
+    float xToFreqHz(float x) const noexcept;
+    float freqHzToX(float freqHz) const noexcept;
+    float yToGainDb(float y) const noexcept;
+    float gainDbToY(float gainDb) const noexcept;
+    float getRangeDb() const noexcept;
     int hitTestBandNode(juce::Point<float> pos) const noexcept;
 
-    HybridResonanceEQAudioProcessor& audioProcessor;
+    static juce::Colour getBandColour(int index) noexcept;
 
-    juce::Rectangle<float> plotBounds;
-    juce::Rectangle<float> floatingBarBounds;
-    juce::Rectangle<float> bottomSpecBarBounds;
+    HybridResonanceEQProcessor& audioProcessor;
+    ProLookAndFeel proLookAndFeel;
+
+    juce::Rectangle<int> topBarBounds;
+    juce::Rectangle<int> graphBounds;
+    juce::Rectangle<int> bandBarBounds;
+    juce::Rectangle<int> bottomBarBounds;
 
     int selectedBandIndex = 0;
-    int draggingBandIndex = -1;
+    int draggedBandIndex = -1;
 
-    std::array<float, HybridResonanceEQAudioProcessor::kSpectrumBins> spectrumDb {};
-    std::array<float, HybridResonanceEQAudioProcessor::kNumBands> dynOffsetsDb {};
+    // Top bar & Analyzer controls
+    juce::ComboBox bandSelectorBox;
+    juce::TextButton addBandButton { "+ Band" };
+    juce::TextButton delBandButton { "Del" };
 
-    // Controles del panel flotante inferior (banda activa)
-    juce::ComboBox bandTypeBox;
+    juce::ComboBox resolutionBox;
+    juce::ComboBox speedBox;
+    juce::ComboBox tiltBox;
+    juce::ComboBox rangeBox;
+
+    juce::ToggleButton showPreToggle { "Pre" };
+    juce::ToggleButton showPostToggle { "Post" };
+    juce::ToggleButton bypassToggle { "Bypass" };
+
+    juce::Slider outputGainSlider;
+    juce::Label outputGainLabel;
+
+    // Selected Band controls
+    juce::ToggleButton bandEnabledToggle { "On" };
+    juce::ComboBox bandShapeBox;
     juce::ComboBox bandRouteBox;
-    juce::Slider freqSlider;
-    juce::Slider gainSlider;
-    juce::Slider qSlider;
-    juce::ToggleButton dynButton { "Dyn" };
-    juce::ToggleButton soloButton { "Solo" };
-    juce::ToggleButton bandEnableButton { "On" };
+    juce::ToggleButton bandDynToggle { "Dyn" };
+    juce::ToggleButton bandSoloToggle { "Solo" };
 
-    // Controles inferiores del motor espectral (estilo Soothe 3)
-    juce::ToggleButton specEnableButton { "Spectral" };
-    juce::ToggleButton specDeltaButton { "Delta" };
-    juce::Slider depthSlider;
-    juce::Slider sharpSlider;
-    juce::Slider smoothSlider;
-    juce::Slider mixSlider;
+    juce::Slider bandFreqSlider;
+    juce::Slider bandGainSlider;
+    juce::Slider bandQSlider;
+    juce::Slider bandSlopeSlider;
+    juce::Slider bandDynRangeSlider;
+    juce::Slider bandDynThreshSlider;
 
-    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
-    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
-    using ComboAttachment  = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+    juce::Label bandFreqLabel;
+    juce::Label bandGainLabel;
+    juce::Label bandQLabel;
+    juce::Label bandSlopeLabel;
+    juce::Label bandDynRangeLabel;
+    juce::Label bandDynThreshLabel;
 
-    std::unique_ptr<ButtonAttachment> bandEnAtt, bandSoloAtt, bandDynAtt;
-    std::unique_ptr<ComboAttachment> bandTypeAtt, bandRouteAtt;
-    std::unique_ptr<SliderAttachment> freqAtt, gainAtt, qAtt;
+    // Spectral Resonance controls
+    juce::ToggleButton specEnabledToggle { "Spectral" };
+    juce::ToggleButton specDeltaToggle { "Delta" };
 
-    ButtonAttachment specEnAtt { audioProcessor.getAPVTS(), "spec_en", specEnableButton };
-    ButtonAttachment specDeltaAtt { audioProcessor.getAPVTS(), "spec_delta", specDeltaButton };
-    SliderAttachment depthAtt { audioProcessor.getAPVTS(), "spec_depth", depthSlider };
-    SliderAttachment sharpAtt { audioProcessor.getAPVTS(), "spec_sharp", sharpSlider };
-    SliderAttachment smoothAtt { audioProcessor.getAPVTS(), "spec_smooth", smoothSlider };
-    SliderAttachment mixAtt { audioProcessor.getAPVTS(), "spec_mix", mixSlider };
+    juce::Slider specDepthSlider;
+    juce::Slider specSharpSlider;
+    juce::Slider specSmoothSlider;
+    juce::Slider specMixSlider;
+    juce::Slider specMinFreqSlider;
+    juce::Slider specMaxFreqSlider;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HybridResonanceEQAudioProcessorEditor)
+    juce::Label specDepthLabel;
+    juce::Label specSharpLabel;
+    juce::Label specSmoothLabel;
+    juce::Label specMixLabel;
+    juce::Label specMinFreqLabel;
+    juce::Label specMaxFreqLabel;
+
+    // Attachments
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> resolutionAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> speedAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> tiltAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> rangeAttach;
+
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> showPreAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> showPostAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> outputGainAttach;
+
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> specEnabledAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> specDeltaAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> specDepthAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> specSharpAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> specSmoothAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> specMixAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> specMinFreqAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> specMaxFreqAttach;
+
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bandEnabledAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> bandShapeAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> bandRouteAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bandDynAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bandSoloAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandFreqAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandGainAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandQAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandSlopeAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandDynRangeAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandDynThreshAttach;
+
+    std::array<float, dspcore::SpectralResonanceEngine::numBins> preSpectrumDb {};
+    std::array<float, dspcore::SpectralResonanceEngine::numBins> postSpectrumDb {};
+    std::array<float, dspcore::SpectralResonanceEngine::numBins> reductionDb {};
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HybridResonanceEQEditor)
 };
