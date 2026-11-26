@@ -306,4 +306,113 @@ private:
                     }
                     case FilterShape::LowShelf:
                     {
-                        const
+                        const double sqrtA2Alpha = 2.0 * std::sqrt(A) * alpha;
+                        b0 = A * ((A + 1.0) - (A - 1.0) * cosW0 + sqrtA2Alpha);
+                        b1 = 2.0 * A * ((A - 1.0) - (A + 1.0) * cosW0);
+                        b2 = A * ((A + 1.0) - (A - 1.0) * cosW0 - sqrtA2Alpha);
+                        a0 = (A + 1.0) + (A - 1.0) * cosW0 + sqrtA2Alpha;
+                        a1 = -2.0 * ((A - 1.0) + (A + 1.0) * cosW0);
+                        a2 = (A + 1.0) + (A - 1.0) * cosW0 - sqrtA2Alpha;
+                        break;
+                    }
+                    case FilterShape::HighShelf:
+                    {
+                        const double sqrtA2Alpha = 2.0 * std::sqrt(A) * alpha;
+                        b0 = A * ((A + 1.0) + (A - 1.0) * cosW0 + sqrtA2Alpha);
+                        b1 = -2.0 * A * ((A - 1.0) + (A + 1.0) * cosW0);
+                        b2 = A * ((A + 1.0) + (A - 1.0) * cosW0 - sqrtA2Alpha);
+                        a0 = (A + 1.0) - (A - 1.0) * cosW0 + sqrtA2Alpha;
+                        a1 = 2.0 * ((A - 1.0) - (A + 1.0) * cosW0);
+                        a2 = (A + 1.0) - (A - 1.0) * cosW0 - sqrtA2Alpha;
+                        break;
+                    }
+                    case FilterShape::LowCut:
+                    {
+                        const double stageQ = (stages == 1) ? qVal : (0.5411961 + 0.15 * st);
+                        const double stageAlpha = sinW0 / (2.0 * stageQ);
+                        b0 = (1.0 + cosW0) * 0.5;
+                        b1 = -(1.0 + cosW0);
+                        b2 = (1.0 + cosW0) * 0.5;
+                        a0 = 1.0 + stageAlpha;
+                        a1 = -2.0 * cosW0;
+                        a2 = 1.0 - stageAlpha;
+                        break;
+                    }
+                    case FilterShape::HighCut:
+                    {
+                        const double stageQ = (stages == 1) ? qVal : (0.5411961 + 0.15 * st);
+                        const double stageAlpha = sinW0 / (2.0 * stageQ);
+                        b0 = (1.0 - cosW0) * 0.5;
+                        b1 = 1.0 - cosW0;
+                        b2 = (1.0 - cosW0) * 0.5;
+                        a0 = 1.0 + stageAlpha;
+                        a1 = -2.0 * cosW0;
+                        a2 = 1.0 - stageAlpha;
+                        break;
+                    }
+                    case FilterShape::Notch:
+                    {
+                        b0 = 1.0;
+                        b1 = -2.0 * cosW0;
+                        b2 = 1.0;
+                        a0 = 1.0 + alpha;
+                        a1 = -2.0 * cosW0;
+                        a2 = 1.0 - alpha;
+                        break;
+                    }
+                    case FilterShape::BandPass:
+                    {
+                        b0 = alpha;
+                        b1 = 0.0;
+                        b2 = -alpha;
+                        a0 = 1.0 + alpha;
+                        a1 = -2.0 * cosW0;
+                        a2 = 1.0 - alpha;
+                        break;
+                    }
+                    case FilterShape::TiltShelf:
+                    {
+                        const double halfA = std::pow(10.0, (totalGainDb * 0.5) / 40.0);
+                        const double sqrtA2Alpha = 2.0 * std::sqrt(halfA) * alpha;
+                        b0 = halfA * ((halfA + 1.0) + (halfA - 1.0) * cosW0 + sqrtA2Alpha);
+                        b1 = -2.0 * halfA * ((halfA - 1.0) + (halfA + 1.0) * cosW0);
+                        b2 = halfA * ((halfA + 1.0) + (halfA - 1.0) * cosW0 - sqrtA2Alpha);
+                        a0 = (halfA + 1.0) - (halfA - 1.0) * cosW0 + sqrtA2Alpha;
+                        a1 = 2.0 * ((halfA - 1.0) - (halfA + 1.0) * cosW0);
+                        a2 = (halfA + 1.0) - (halfA - 1.0) * cosW0 - sqrtA2Alpha;
+                        break;
+                    }
+                }
+            }
+
+            out[st].b0 = static_cast<float>(b0 / a0);
+            out[st].b1 = static_cast<float>(b1 / a0);
+            out[st].b2 = static_cast<float>(b2 / a0);
+            out[st].a1 = static_cast<float>(a1 / a0);
+            out[st].a2 = static_cast<float>(a2 / a0);
+        }
+    }
+
+    void updateCoefficients(const BandParams& p, float dynamicGainOffsetDb, float gainScale)
+    {
+        BiquadCoeffs normCoeffs[4];
+        computeCoeffsInternal(p, dynamicGainOffsetDb, gainScale, normCoeffs);
+        for (int st = 0; st < 4; ++st)
+        {
+            coeffs[static_cast<size_t>(st)] = normCoeffs[st];
+            stagesL[static_cast<size_t>(st)].c = normCoeffs[st];
+            stagesR[static_cast<size_t>(st)].c = normCoeffs[st];
+        }
+    }
+
+    double sampleRate = 48000.0;
+    BandParams currentParams;
+    std::array<BiquadCoeffs, 4> coeffs {};
+    std::array<BiquadState, 4> stagesL {};
+    std::array<BiquadState, 4> stagesR {};
+    float envLevel = 0.0f;
+    float autoThreshEnvDb = -24.0f;
+    float currentDynamicGainDb = 0.0f;
+};
+
+} // namespace dspcore
