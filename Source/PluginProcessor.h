@@ -65,6 +65,11 @@ public:
         return eqEngine.getBandDynamicGainDb(bandIndex);
     }
 
+    float getAutoGainCompensationDb() const noexcept
+    {
+        return autoGainSmoothDb;
+    }
+
     double getCurrentSampleRateHz() const noexcept { return currentSampleRate; }
 
 private:
@@ -76,7 +81,8 @@ private:
     };
 
     void syncParametersToDSP();
-    void applyCharacterAndOutput(juce::AudioBuffer<float>& buffer,
+    void applyCharacterAndOutput(const juce::AudioBuffer<float>& inputRef,
+                                 juce::AudioBuffer<float>& outputBuffer,
                                  CharacterMode mode,
                                  float outGainDb,
                                  bool phaseInvert,
@@ -84,6 +90,7 @@ private:
 
     dspcore::ParametricEQEngine eqEngine;
     dspcore::SpectralResonanceEngine spectralEngine;
+    juce::AudioBuffer<float> inputReferenceBuffer;
     double currentSampleRate = 48000.0;
     float autoGainSmoothDb = 0.0f;
 
