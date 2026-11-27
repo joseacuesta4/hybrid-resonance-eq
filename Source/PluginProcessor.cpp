@@ -1004,7 +1004,7 @@ void HybridResonanceEQProcessor::updateSpectrumVisuals(
         : ((tiltIdx == 2) ? 4.5f : 6.0f));
 
     auto analyze =
-        [this, numSamples, numChannels, tiltDbPerOct](
+        [this, numSamples, numChannels, tiltDbPerOct, alpha](
             const juce::AudioBuffer<float>& source,
             std::array<float, numBins>& smoothed)
     {
