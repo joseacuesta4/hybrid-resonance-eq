@@ -6,67 +6,9 @@
 #include <atomic>
 #include <vector>
 
-#if __has_include("dsp/ParametricEQEngine.h")
- #include "dsp/ParametricEQEngine.h"
-#elif __has_include("ParametricEQEngine.h")
- #include "ParametricEQEngine.h"
-#endif
-
-#if __has_include("dsp/SpectralResonanceEngine.h")
- #include "dsp/SpectralResonanceEngine.h"
-#elif __has_include("SpectralResonanceEngine.h")
- #include "SpectralResonanceEngine.h"
-#endif
-
-#ifndef HYBRID_RESONANCE_FALLBACK_DSP
-#define HYBRID_RESONANCE_FALLBACK_DSP 1
-#endif
-
-namespace dspcore
-{
-#if !defined(PARAMETRIC_EQ_ENGINE_DEFINED)
-enum class FilterShape
-{
-    Bell = 0,
-    LowShelf,
-    HighShelf,
-    LowCut,
-    HighCut,
-    Notch,
-    BandPass,
-    TiltShelf
-};
-
-struct BandFilter
-{
-    static constexpr bool supportsSlope(FilterShape shape) noexcept
-    {
-        return shape == FilterShape::LowCut || shape == FilterShape::HighCut ||
-               shape == FilterShape::LowShelf || shape == FilterShape::HighShelf ||
-               shape == FilterShape::TiltShelf;
-    }
-
-    static constexpr bool supportsGain(FilterShape shape) noexcept
-    {
-        return shape != FilterShape::LowCut && shape != FilterShape::HighCut &&
-               shape != FilterShape::BandPass;
-    }
-};
-
-struct ParametricEQEngine
-{
-    static constexpr int maxBands = 16;
-};
-#endif
-
-#if !defined(SPECTRAL_RESONANCE_ENGINE_DEFINED)
-struct SpectralResonanceEngine
-{
-    static constexpr int fftSize = 2048;
-    static constexpr int numBins = fftSize / 2 + 1;
-};
-#endif
-} // namespace dspcore
+#include "dsp/BandFilter.h"
+#include "dsp/ParametricEQEngine.h"
+#include "dsp/SpectralResonanceEngine.h"
 
 class HybridResonanceEQProcessor : public juce::AudioProcessor
 {
@@ -130,10 +72,9 @@ private:
 
     std::array<BandRuntimeState, dspcore::ParametricEQEngine::maxBands> bandStates;
 
-    // Estado de FFT y reducción espectral
-    static constexpr int fftOrder = 11; // 2048
+    static constexpr int fftOrder = 11;
     static constexpr int fftSize = 1 << fftOrder;
-    static constexpr int hopSize = fftSize / 4; // 512 (75% overlap)
+    static constexpr int hopSize = fftSize / 4;
     static constexpr int numBins = fftSize / 2 + 1;
 
     juce::dsp::FFT forwardFFT { fftOrder };
@@ -159,7 +100,6 @@ private:
 
     void resetDSPState();
     void updateBandFilters(double sampleRate);
-    float computeSingleBandMagnitudeDb(int bandIndex, double freqHz) const noexcept;
     float applyBandCharacterSample(float sample, int characterMode) const noexcept;
     void processSpectralStage(juce::AudioBuffer<float>& buffer,
                               bool anySpecEnabled,
