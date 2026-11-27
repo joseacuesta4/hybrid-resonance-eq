@@ -137,7 +137,6 @@ HybridResonanceEQEditor::HybridResonanceEQEditor(HybridResonanceEQProcessor& p)
     postSpectrumDb.fill(-120.0f);
     reductionDb.fill(0.0f);
 
-    // Band selector & quick actions
     for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
         bandSelectorBox.addItem("Band " + juce::String(i + 1), i + 1);
     bandSelectorBox.setSelectedId(1, juce::dontSendNotification);
@@ -168,7 +167,6 @@ HybridResonanceEQEditor::HybridResonanceEQEditor(HybridResonanceEQProcessor& p)
     abButton.onClick = [this] { toggleABState(); };
     addAndMakeVisible(abButton);
 
-    // Analyzer & Character options
     resolutionBox.addItemList({ "Res: Low", "Res: Med", "Res: High", "Res: Max" }, 1);
     addAndMakeVisible(resolutionBox);
     resolutionAttach = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
@@ -201,6 +199,10 @@ HybridResonanceEQEditor::HybridResonanceEQEditor(HybridResonanceEQProcessor& p)
     addAndMakeVisible(showPostToggle);
     showPostAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         audioProcessor.apvts, "ana_show_post", showPostToggle);
+
+    addAndMakeVisible(autoGainToggle);
+    autoGainAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        audioProcessor.apvts, "auto_gain", autoGainToggle);
 
     addAndMakeVisible(phaseInvertToggle);
     phaseInvertAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
@@ -249,6 +251,7 @@ HybridResonanceEQEditor::HybridResonanceEQEditor(HybridResonanceEQProcessor& p)
     addAndMakeVisible(bandAutoThreshToggle);
     bandAutoThreshToggle.onClick = [this] { updateContextualBandControls(); };
 
+    addAndMakeVisible(bandSpecToggle);
     addAndMakeVisible(bandSoloToggle);
 
     configureRotary(bandFreqSlider, bandFreqLabel, "FREQ", " Hz");
@@ -260,38 +263,26 @@ HybridResonanceEQEditor::HybridResonanceEQEditor(HybridResonanceEQProcessor& p)
     configureRotary(bandDynAttackSlider, bandDynAttackLabel, "ATTACK", " ms");
     configureRotary(bandDynReleaseSlider, bandDynReleaseLabel, "RELEASE", " ms");
 
-    // Spectral controls
-    addAndMakeVisible(specEnabledToggle);
-    specEnabledAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
-        audioProcessor.apvts, "spec_enabled", specEnabledToggle);
-
+    // Per-band Spectral shaping controls
     addAndMakeVisible(specDeltaToggle);
     specDeltaAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         audioProcessor.apvts, "spec_delta", specDeltaToggle);
 
-    configureRotary(specDepthSlider, specDepthLabel, "DEPTH", "");
+    configureRotary(specDepthSlider, specDepthLabel, "SPEC DEPTH", "");
     specDepthAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         audioProcessor.apvts, "spec_depth", specDepthSlider);
 
-    configureRotary(specSharpSlider, specSharpLabel, "SHARP", "");
+    configureRotary(specSharpSlider, specSharpLabel, "SPEC SHARP", "");
     specSharpAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         audioProcessor.apvts, "spec_sharpness", specSharpSlider);
 
-    configureRotary(specSmoothSlider, specSmoothLabel, "SMOOTH", "");
+    configureRotary(specSmoothSlider, specSmoothLabel, "SPEC SMOOTH", "");
     specSmoothAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         audioProcessor.apvts, "spec_smoothing", specSmoothSlider);
 
-    configureRotary(specMixSlider, specMixLabel, "MIX", "");
+    configureRotary(specMixSlider, specMixLabel, "SPEC MIX", "");
     specMixAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         audioProcessor.apvts, "spec_mix", specMixSlider);
-
-    configureRotary(specMinFreqSlider, specMinFreqLabel, "LOW LIM", " Hz");
-    specMinFreqAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
-        audioProcessor.apvts, "spec_min_freq", specMinFreqSlider);
-
-    configureRotary(specMaxFreqSlider, specMaxFreqLabel, "HIGH LIM", " Hz");
-    specMaxFreqAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
-        audioProcessor.apvts, "spec_max_freq", specMaxFreqSlider);
 
     selectBand(0);
     startTimerHz(30);
@@ -321,6 +312,7 @@ void HybridResonanceEQEditor::updateContextualBandControls()
     const bool hasGain = dspcore::BandFilter::supportsGain(shape);
     const bool dynOn = bandDynToggle.getToggleState();
     const bool autoThresh = bandAutoThreshToggle.getToggleState();
+    const bool specOn = bandSpecToggle.getToggleState();
 
     bandSlopeSlider.setEnabled(hasSlope);
     bandSlopeLabel.setAlpha(hasSlope ? 1.0f : 0.35f);
@@ -340,6 +332,16 @@ void HybridResonanceEQEditor::updateContextualBandControls()
 
     bandDynReleaseSlider.setEnabled(dynOn);
     bandDynReleaseLabel.setAlpha(dynOn ? 1.0f : 0.35f);
+
+    specDeltaToggle.setEnabled(specOn);
+    specDepthSlider.setEnabled(specOn);
+    specDepthLabel.setAlpha(specOn ? 1.0f : 0.35f);
+    specSharpSlider.setEnabled(specOn);
+    specSharpLabel.setAlpha(specOn ? 1.0f : 0.35f);
+    specSmoothSlider.setEnabled(specOn);
+    specSmoothLabel.setAlpha(specOn ? 1.0f : 0.35f);
+    specMixSlider.setEnabled(specOn);
+    specMixLabel.setAlpha(specOn ? 1.0f : 0.35f);
 }
 
 void HybridResonanceEQEditor::selectBand(int bandIndex)
@@ -352,6 +354,7 @@ void HybridResonanceEQEditor::selectBand(int bandIndex)
     bandRouteAttach.reset();
     bandDynAttach.reset();
     bandAutoThreshAttach.reset();
+    bandSpecAttach.reset();
     bandSoloAttach.reset();
     bandFreqAttach.reset();
     bandGainAttach.reset();
@@ -372,6 +375,8 @@ void HybridResonanceEQEditor::selectBand(int bandIndex)
         audioProcessor.apvts, bandParam(selectedBandIndex, "dyn_enabled"), bandDynToggle);
     bandAutoThreshAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         audioProcessor.apvts, bandParam(selectedBandIndex, "dyn_auto"), bandAutoThreshToggle);
+    bandSpecAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        audioProcessor.apvts, bandParam(selectedBandIndex, "spec_enabled"), bandSpecToggle);
     bandSoloAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         audioProcessor.apvts, bandParam(selectedBandIndex, "solo"), bandSoloToggle);
 
@@ -403,6 +408,7 @@ void HybridResonanceEQEditor::copySelectedBand()
     copiedBand.solo = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "solo"))->load() > 0.5f;
     copiedBand.dynamicEnabled = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "dyn_enabled"))->load() > 0.5f;
     copiedBand.autoThreshold = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "dyn_auto"))->load() > 0.5f;
+    copiedBand.spectralEnabled = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "spec_enabled"))->load() > 0.5f;
     copiedBand.shape = static_cast<int>(audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "shape"))->load());
     copiedBand.route = static_cast<int>(audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "route"))->load());
     copiedBand.freq = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "freq"))->load();
@@ -435,6 +441,7 @@ void HybridResonanceEQEditor::pasteToSelectedBand()
     setBool(bandParam(selectedBandIndex, "solo"), copiedBand.solo);
     setBool(bandParam(selectedBandIndex, "dyn_enabled"), copiedBand.dynamicEnabled);
     setBool(bandParam(selectedBandIndex, "dyn_auto"), copiedBand.autoThreshold);
+    setBool(bandParam(selectedBandIndex, "spec_enabled"), copiedBand.spectralEnabled);
     setFloat(bandParam(selectedBandIndex, "shape"), static_cast<float>(copiedBand.shape));
     setFloat(bandParam(selectedBandIndex, "route"), static_cast<float>(copiedBand.route));
     setFloat(bandParam(selectedBandIndex, "freq"), copiedBand.freq);
@@ -639,13 +646,12 @@ void HybridResonanceEQEditor::paint(juce::Graphics& g)
 
     g.setColour(juce::Colour(0xffedf2fa));
     g.setFont(juce::FontOptions(12.5f, juce::Font::bold));
-    g.drawText("HYBRID RESONANCE EQ", 14, topBarBounds.getY(), 200, topBarBounds.getHeight(), juce::Justification::centredLeft);
+    g.drawText("HYBRID RESONANCE EQ", 14, topBarBounds.getY(), 190, topBarBounds.getHeight(), juce::Justification::centredLeft);
 
     const auto gb = graphBounds.toFloat();
     g.setColour(juce::Colour(0xff0d0f13));
     g.fillRect(gb);
 
-    // Frequency grid
     const std::array<float, 10> gridFreqs { 20.0f, 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
     g.setFont(juce::FontOptions(10.5f));
     for (float f : gridFreqs)
@@ -660,7 +666,6 @@ void HybridResonanceEQEditor::paint(juce::Graphics& g)
         g.drawText(label, static_cast<int>(x) - 18, static_cast<int>(gb.getBottom()) - 18, 36, 16, juce::Justification::centred);
     }
 
-    // Gain grid
     const float rangeDb = getRangeDb();
     const float stepDb = (rangeDb <= 6.0f) ? 2.0f : (rangeDb <= 12.0f ? 6.0f : 10.0f);
     for (float db = -rangeDb; db <= rangeDb + 0.001f; db += stepDb)
@@ -678,7 +683,6 @@ void HybridResonanceEQEditor::paint(juce::Graphics& g)
         }
     }
 
-    // Pre & Post spectrum + localized reduction bands only
     const bool showPre = audioProcessor.apvts.getRawParameterValue("ana_show_pre")->load() > 0.5f;
     const bool showPost = audioProcessor.apvts.getRawParameterValue("ana_show_post")->load() > 0.5f;
     const double sr = audioProcessor.getCurrentSampleRateHz();
@@ -718,13 +722,12 @@ void HybridResonanceEQEditor::paint(juce::Graphics& g)
             postFill.lineTo(px, postY);
         }
 
-        // Draw localized reduction only where reductionDb is significantly negative
         const float redDb = reductionDb[static_cast<size_t>(bin)];
-        if (redDb < -0.35f)
+        if (redDb < -0.45f)
         {
             const float intensity = juce::jlimit(0.0f, 1.0f, (-redDb) / 14.0f);
-            const float barH = intensity * (gb.getHeight() * 0.36f);
-            g.setColour(juce::Colour(0xffff5252).withAlpha(0.14f + 0.36f * intensity));
+            const float barH = intensity * (gb.getHeight() * 0.34f);
+            g.setColour(juce::Colour(0xffff5252).withAlpha(0.14f + 0.34f * intensity));
             g.fillRect(px - 1.0f, zeroY, 2.0f, barH);
         }
     }
@@ -750,7 +753,6 @@ void HybridResonanceEQEditor::paint(juce::Graphics& g)
         }
     }
 
-    // Selected individual band curve
     {
         juce::Path selCurve;
         bool selStarted = false;
@@ -768,7 +770,6 @@ void HybridResonanceEQEditor::paint(juce::Graphics& g)
         }
     }
 
-    // Combined EQ curve
     {
         juce::Path sumCurve;
         juce::Path sumFill;
@@ -804,7 +805,6 @@ void HybridResonanceEQEditor::paint(juce::Graphics& g)
         }
     }
 
-    // Band nodes + dynamic reduction ring
     for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
     {
         const bool enabled = audioProcessor.apvts.getRawParameterValue(bandParam(i, "enabled"))->load() > 0.5f;
@@ -854,57 +854,61 @@ void HybridResonanceEQEditor::resized()
 
     {
         auto r = topBarBounds.reduced(8, 7);
-        r.removeFromLeft(195);
+        r.removeFromLeft(185);
 
-        bandSelectorBox.setBounds(r.removeFromLeft(88));
-        r.removeFromLeft(4);
-        addBandButton.setBounds(r.removeFromLeft(56));
+        bandSelectorBox.setBounds(r.removeFromLeft(84));
         r.removeFromLeft(3);
-        delBandButton.setBounds(r.removeFromLeft(38));
-        r.removeFromLeft(6);
-        copyBandButton.setBounds(r.removeFromLeft(46));
+        addBandButton.setBounds(r.removeFromLeft(54));
         r.removeFromLeft(3);
-        pasteBandButton.setBounds(r.removeFromLeft(48));
+        delBandButton.setBounds(r.removeFromLeft(36));
+        r.removeFromLeft(5);
+        copyBandButton.setBounds(r.removeFromLeft(44));
         r.removeFromLeft(3);
-        abButton.setBounds(r.removeFromLeft(32));
-        r.removeFromLeft(8);
-
-        resolutionBox.setBounds(r.removeFromLeft(84));
+        pasteBandButton.setBounds(r.removeFromLeft(46));
         r.removeFromLeft(3);
-        speedBox.setBounds(r.removeFromLeft(82));
-        r.removeFromLeft(3);
-        tiltBox.setBounds(r.removeFromLeft(84));
-        r.removeFromLeft(3);
-        rangeBox.setBounds(r.removeFromLeft(78));
-        r.removeFromLeft(3);
-        characterBox.setBounds(r.removeFromLeft(94));
+        abButton.setBounds(r.removeFromLeft(30));
         r.removeFromLeft(6);
 
-        showPreToggle.setBounds(r.removeFromLeft(40));
+        resolutionBox.setBounds(r.removeFromLeft(80));
         r.removeFromLeft(3);
-        showPostToggle.setBounds(r.removeFromLeft(44));
+        speedBox.setBounds(r.removeFromLeft(78));
         r.removeFromLeft(3);
-        phaseInvertToggle.setBounds(r.removeFromLeft(30));
-        r.removeFromLeft(6);
-        bypassToggle.setBounds(r.removeFromLeft(58));
+        tiltBox.setBounds(r.removeFromLeft(80));
+        r.removeFromLeft(3);
+        rangeBox.setBounds(r.removeFromLeft(74));
+        r.removeFromLeft(3);
+        characterBox.setBounds(r.removeFromLeft(90));
+        r.removeFromLeft(5);
+
+        showPreToggle.setBounds(r.removeFromLeft(38));
+        r.removeFromLeft(3);
+        showPostToggle.setBounds(r.removeFromLeft(42));
+        r.removeFromLeft(3);
+        autoGainToggle.setBounds(r.removeFromLeft(60));
+        r.removeFromLeft(3);
+        phaseInvertToggle.setBounds(r.removeFromLeft(28));
+        r.removeFromLeft(5);
+        bypassToggle.setBounds(r.removeFromLeft(54));
     }
 
     {
         auto r = bandBarBounds.reduced(8, 4);
-        auto leftCol = r.removeFromLeft(275);
+        auto leftCol = r.removeFromLeft(290);
         auto topBtns = leftCol.removeFromTop(30);
-        bandEnabledToggle.setBounds(topBtns.removeFromLeft(44));
+        bandEnabledToggle.setBounds(topBtns.removeFromLeft(42));
         topBtns.removeFromLeft(4);
-        bandShapeBox.setBounds(topBtns.removeFromLeft(96));
+        bandShapeBox.setBounds(topBtns.removeFromLeft(94));
         topBtns.removeFromLeft(4);
-        bandRouteBox.setBounds(topBtns.removeFromLeft(82));
+        bandRouteBox.setBounds(topBtns.removeFromLeft(78));
 
         auto botBtns = leftCol.removeFromTop(28).translated(0, 4);
-        bandDynToggle.setBounds(botBtns.removeFromLeft(52));
+        bandDynToggle.setBounds(botBtns.removeFromLeft(48));
         botBtns.removeFromLeft(4);
-        bandAutoThreshToggle.setBounds(botBtns.removeFromLeft(52));
+        bandAutoThreshToggle.setBounds(botBtns.removeFromLeft(48));
         botBtns.removeFromLeft(4);
-        bandSoloToggle.setBounds(botBtns.removeFromLeft(52));
+        bandSpecToggle.setBounds(botBtns.removeFromLeft(50));
+        botBtns.removeFromLeft(4);
+        bandSoloToggle.setBounds(botBtns.removeFromLeft(48));
 
         const int knobW = juce::jmax(58, r.getWidth() / 8);
         auto placeKnob = [&r, knobW](juce::Slider& s, juce::Label& l)
@@ -926,12 +930,11 @@ void HybridResonanceEQEditor::resized()
 
     {
         auto r = bottomBarBounds.reduced(8, 4);
-        auto leftCol = r.removeFromLeft(155);
-        specEnabledToggle.setBounds(leftCol.removeFromTop(34).reduced(0, 2));
-        specDeltaToggle.setBounds(leftCol.removeFromTop(34).reduced(0, 2));
+        auto leftCol = r.removeFromLeft(130);
+        specDeltaToggle.setBounds(leftCol.removeFromTop(42).reduced(0, 4));
 
-        const int totalKnobs = 8; // 6 spectral + scale + output
-        const int knobW = juce::jmax(58, r.getWidth() / totalKnobs);
+        const int totalKnobs = 6; // 4 spectral + scale + output
+        const int knobW = juce::jmax(62, r.getWidth() / totalKnobs);
         auto placeKnob = [&r, knobW](juce::Slider& s, juce::Label& l)
         {
             auto slot = r.removeFromLeft(knobW);
@@ -943,8 +946,6 @@ void HybridResonanceEQEditor::resized()
         placeKnob(specSharpSlider, specSharpLabel);
         placeKnob(specSmoothSlider, specSmoothLabel);
         placeKnob(specMixSlider, specMixLabel);
-        placeKnob(specMinFreqSlider, specMinFreqLabel);
-        placeKnob(specMaxFreqSlider, specMaxFreqLabel);
         placeKnob(gainScaleSlider, gainScaleLabel);
         placeKnob(outputGainSlider, outputGainLabel);
     }
