@@ -1,3 +1,4 @@
+
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -49,7 +50,8 @@ public:
     float getBandDynamicGainDb(int bandIndex) const noexcept;
     float getAutoGainCompensationDb() const noexcept;
 
-    static constexpr int analyzerNumBins = 1025; // 2048-point analyzer FFT
+    static constexpr int analyzerNumBins = 1025;
+
     void getVisualData(std::array<float, analyzerNumBins>& preOut,
                        std::array<float, analyzerNumBins>& postOut,
                        std::array<float, analyzerNumBins>& redOut) const noexcept;
@@ -74,11 +76,23 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> outputGainSmooth;
 
     std::array<BandRuntimeState, dspcore::ParametricEQEngine::maxBands> bandStates;
+
     dspcore::BandFilter soloMonitorFilter;
     dspcore::SpectralResonanceEngine spectralEngine;
+
     juce::AudioBuffer<float> dryScratch;
     juce::AudioBuffer<float> bandScratch;
+    juce::AudioBuffer<float> alignedDryScratch;
+
+    static constexpr int maxDryDelaySamples = 4096;
+
+    std::array<float, maxDryDelaySamples> dryDelayLineL {};
+    std::array<float, maxDryDelaySamples> dryDelayLineR {};
+
+    int dryDelayWritePosition = 0;
+
     std::array<float, dspcore::SpectralResonanceEngine::numBins> spectralReduction {};
+
     int lastReportedLatency = 0;
 
     static constexpr int fftOrder = 11;
@@ -87,15 +101,19 @@ private:
     static constexpr int numBins = fftSize / 2 + 1;
 
     juce::dsp::FFT forwardFFT { fftOrder };
-    juce::dsp::WindowingFunction<float> hannWindow { static_cast<size_t>(fftSize),
-                                                     juce::dsp::WindowingFunction<float>::hann,
-                                                     false };
+
+    juce::dsp::WindowingFunction<float> hannWindow {
+        static_cast<size_t>(fftSize),
+        juce::dsp::WindowingFunction<float>::hann,
+        false
+    };
 
     std::vector<float> fftWorkspace;
 
     std::array<float, numBins> preSpectrumSmooth;
     std::array<float, numBins> postSpectrumSmooth;
     std::array<float, numBins> reductionSmooth;
+
     std::array<std::atomic<float>, numBins> publishedPreSpectrum {};
     std::array<std::atomic<float>, numBins> publishedPostSpectrum {};
     std::array<std::atomic<float>, numBins> publishedReduction {};
@@ -104,7 +122,9 @@ private:
 
     void resetDSPState();
     void updateBandFilters(double sampleRate);
+
     float applyBandCharacterSample(float sample, int characterMode) const noexcept;
+
     void updateSpectrumVisuals(const juce::AudioBuffer<float>& preBuffer,
                                const juce::AudioBuffer<float>& postBuffer);
 
