@@ -2,6 +2,7 @@
 
 #include "BandFilter.h"
 #include <array>
+#include <cmath>
 
 namespace dspcore
 {
@@ -13,15 +14,22 @@ public:
 
     void prepare(double newSampleRate, int /*maxBlockSize*/)
     {
-        sampleRate = newSampleRate;
+        sampleRate = juce::jmax(8000.0, newSampleRate);
         for (auto& band : bands)
             band.prepare(newSampleRate);
+
+        soloFilter.prepare(sampleRate);
+        soloMixSmooth = 0.0f;
+        soloDryBuffer.clear();
     }
 
     void reset()
     {
         for (auto& band : bands)
             band.reset();
+
+        soloFilter.reset();
+        soloMixSmooth = 0.0f;
     }
 
     void setBandParameters(int index, const BandParams& params)
@@ -65,14 +73,37 @@ public:
 
         if (soloIndex >= 0)
         {
-            BandParams soloBand = bands[static_cast<size_t>(soloIndex)].getParameters();
-            soloBand.shape = FilterShape::BandPass;
-            soloBand.q = juce::jlimit(0.5f, 16.0f, soloBand.q * 1.5f);
-            soloMonitorFilter.prepare(sampleRate);
-            soloMonitorFilter.setParameters(soloBand);
-            soloMonitorFilter.processBlock(left, right, numSamples, 1.0f);
+            if (soloDryBuffer.getNumSamples() < numSamples)
+                soloDryBuffer.setSize(2, numSamples, false, false, true);
+
+            soloDryBuffer.copyFrom(0, 0, left, numSamples);
+            soloDryBuffer.copyFrom(1, 0, right, numSamples);
+
+            const auto& srcBand = bands[static_cast<size_t>(soloIndex)].getParameters();
+            BandParams inspectParams = srcBand;
+            inspectParams.enabled = true;
+            inspectParams.solo = false;
+            inspectParams.dynamicEnabled = false;
+            inspectParams.shape = FilterShape::BandPass;
+            inspectParams.q = juce::jlimit(0.4f, 6.0f, srcBand.q > 0.1f ? srcBand.q : 1.0f);
+
+            soloFilter.setParameters(inspectParams);
+            soloFilter.processBlock(left, right, numSamples, 1.0f);
+
+            const auto* dryL = soloDryBuffer.getReadPointer(0);
+            const auto* dryR = soloDryBuffer.getReadPointer(1);
+            const float coeff = std::exp(-1.0f / (0.015f * static_cast<float>(sampleRate)));
+
+            for (int i = 0; i < numSamples; ++i)
+            {
+                soloMixSmooth = coeff * soloMixSmooth + (1.0f - coeff) * 1.0f;
+                left[i] = dryL[i] * (1.0f - soloMixSmooth) + left[i] * soloMixSmooth;
+                right[i] = dryR[i] * (1.0f - soloMixSmooth) + right[i] * soloMixSmooth;
+            }
             return;
         }
+
+        soloMixSmooth = 0.0f;
 
         for (int i = 0; i < maxBands; ++i)
         {
@@ -102,7 +133,9 @@ public:
 private:
     double sampleRate = 48000.0;
     std::array<BandFilter, maxBands> bands;
-    BandFilter soloMonitorFilter;
+    BandFilter soloFilter;
+    juce::AudioBuffer<float> soloDryBuffer;
+    float soloMixSmooth = 0.0f;
 };
 
 } // namespace dspcore
