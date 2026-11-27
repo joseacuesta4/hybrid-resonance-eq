@@ -38,6 +38,20 @@ HybridResonanceEQEditor::HybridResonanceEQEditor(HybridResonanceEQProcessor& p)
     tiltAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
         processorRef.apvts, "ana_tilt", tiltCombo);
 
+    specResolutionLabel.setText("Spec FFT", juce::dontSendNotification);
+    specResolutionLabel.setFont(juce::FontOptions(11.5f, juce::Font::bold));
+    specResolutionLabel.setColour(juce::Label::textColourId, theme.textMuted);
+    addAndMakeVisible(specResolutionLabel);
+
+    specResolutionCombo.addItemList({ "2048 · Low Latency", "4096 · High Quality" }, 1);
+    specResolutionCombo.setColour(juce::ComboBox::backgroundColourId, theme.panelElevated);
+    specResolutionCombo.setColour(juce::ComboBox::textColourId, theme.textPrimary);
+    specResolutionCombo.setColour(juce::ComboBox::outlineColourId, theme.borderSubtle);
+    specResolutionCombo.setTooltip("Spectral processing FFT size. 4096 improves frequency selectivity and increases latency.");
+    addAndMakeVisible(specResolutionCombo);
+    specResolutionAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(
+        processorRef.apvts, "spec_resolution", specResolutionCombo);
+
     bypassButton.setClickingTogglesState(true);
     bypassButton.setColour(juce::TextButton::buttonColourId, theme.panelElevated);
     bypassButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0x66f59e0b));
@@ -46,6 +60,20 @@ HybridResonanceEQEditor::HybridResonanceEQEditor(HybridResonanceEQProcessor& p)
     addAndMakeVisible(bypassButton);
     bypassAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         processorRef.apvts, "global_bypass", bypassButton);
+
+    auto configureAnalyzerToggle = [this](juce::ToggleButton& button, juce::Colour active)
+    {
+        button.setColour(juce::ToggleButton::textColourId, theme.textMuted);
+        button.setColour(juce::ToggleButton::tickColourId, active);
+        button.setColour(juce::ToggleButton::tickDisabledColourId, theme.textMuted);
+        addAndMakeVisible(button);
+    };
+    configureAnalyzerToggle(preAnalyzerButton, juce::Colour(0xff94a3b8));
+    configureAnalyzerToggle(postAnalyzerButton, juce::Colour(0xff7dd3fc));
+    preAnalyzerAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        processorRef.apvts, "ana_show_pre", preAnalyzerButton);
+    postAnalyzerAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        processorRef.apvts, "ana_show_post", postAnalyzerButton);
 
     selectedBandLabel.setFont(juce::FontOptions(12.5f, juce::Font::bold));
     addAndMakeVisible(selectedBandLabel);
@@ -103,6 +131,7 @@ HybridResonanceEQEditor::HybridResonanceEQEditor(HybridResonanceEQProcessor& p)
     addAndMakeVisible(removeBandButton);
 
     smoothMainCurve.fill(-9.0f);
+    smoothPreCurve.fill(-9.0f);
     fastRedCurve.fill(0.0f);
 
     selectBand(0, true);
@@ -496,7 +525,7 @@ void HybridResonanceEQEditor::timerCallback()
 
     const float rangeDb = getDisplayRangeDb();
     const float nyquist = juce::jmax(1000.0f, static_cast<float>(processorRef.getCurrentSampleRateHz()) * 0.5f);
-    const int maxBin = juce::jmax(1, dspcore::SpectralResonanceEngine::numBins - 1);
+    const int maxBin = juce::jmax(1, HybridResonanceEQProcessor::analyzerNumBins - 1);
 
     // Main spectrum: slower, organic smoothed waves across log frequencies
     constexpr float mainInertia = 0.045f;
@@ -523,6 +552,21 @@ void HybridResonanceEQEditor::timerCallback()
 
         smoothMainCurve[static_cast<size_t>(i)] +=
             (juce::jlimit(-rangeDb, rangeDb, targetDb) - smoothMainCurve[static_cast<size_t>(i)]) * mainInertia;
+
+        float preWeightedSum = 0.0f;
+        float preWeightTotal = 0.0f;
+        for (int k = -5; k <= 5; ++k)
+        {
+            const int b = juce::jlimit(0, maxBin, centerBin + k);
+            const float w = 1.0f - 0.15f * std::abs(k);
+            preWeightedSum += rawPreBins[static_cast<size_t>(b)] * w;
+            preWeightTotal += w;
+        }
+        const float preDb = (preWeightTotal > 0.0f) ? (preWeightedSum / preWeightTotal) : -90.0f;
+        const float preNorm = juce::jlimit(0.0f, 1.0f, (preDb + 72.0f) / 66.0f);
+        const float preTarget = -rangeDb + preNorm * (rangeDb * 1.15f);
+        smoothPreCurve[static_cast<size_t>(i)] +=
+            (juce::jlimit(-rangeDb, rangeDb, preTarget) - smoothPreCurve[static_cast<size_t>(i)]) * mainInertia;
     }
 
     // Reduction spectrum: faster response and higher detail along log frequencies
@@ -575,10 +619,18 @@ void HybridResonanceEQEditor::resized()
     titleLabel.setBounds(topRow.removeFromLeft(220));
 
     bypassButton.setBounds(topRow.removeFromRight(84));
+    topRow.removeFromRight(10);
+    postAnalyzerButton.setBounds(topRow.removeFromRight(58));
+    topRow.removeFromRight(4);
+    preAnalyzerButton.setBounds(topRow.removeFromRight(52));
     topRow.removeFromRight(12);
     tiltCombo.setBounds(topRow.removeFromRight(86));
     topRow.removeFromRight(6);
     tiltLabel.setBounds(topRow.removeFromRight(30));
+    topRow.removeFromRight(10);
+    specResolutionCombo.setBounds(topRow.removeFromRight(142));
+    topRow.removeFromRight(5);
+    specResolutionLabel.setBounds(topRow.removeFromRight(54));
 
     const bool stripActive = !bottomStripBounds.isEmpty();
     selectedBandLabel.setVisible(stripActive);
@@ -676,7 +728,26 @@ void HybridResonanceEQEditor::drawGraphGridAndCurves(juce::Graphics& g)
                    juce::Justification::left);
     }
 
-    // 1. Main spectrum curve (slow, smooth continuous wave)
+    // 1. Pre-EQ spectrum (thin, subdued trace)
+    const bool showPre = processorRef.apvts.getRawParameterValue("ana_show_pre")->load() > 0.5f;
+    const bool showPost = processorRef.apvts.getRawParameterValue("ana_show_post")->load() > 0.5f;
+    if (showPre)
+    {
+        juce::Path preStroke;
+        for (int i = 0; i < renderPoints; ++i)
+        {
+            const float t = static_cast<float>(i) / static_cast<float>(renderPoints - 1);
+            const float x = static_cast<float>(graphBounds.getX()) + t * static_cast<float>(graphBounds.getWidth());
+            const float y = juce::jlimit(static_cast<float>(graphBounds.getY()), bottomY,
+                dbToY(smoothPreCurve[static_cast<size_t>(i)], rangeDb));
+            if (i == 0) preStroke.startNewSubPath(x, y);
+            else preStroke.lineTo(x, y);
+        }
+        g.setColour(juce::Colour(0x887c8798));
+        g.strokePath(preStroke, juce::PathStrokeType(1.0f));
+    }
+
+    // 2. Post-EQ spectrum
     juce::Path specStroke;
     juce::Path specFill;
     for (int i = 0; i < renderPoints; ++i)
@@ -701,12 +772,15 @@ void HybridResonanceEQEditor::drawGraphGridAndCurves(juce::Graphics& g)
     specFill.lineTo(static_cast<float>(graphBounds.getRight()), bottomY);
     specFill.closeSubPath();
 
-    g.setColour(theme.specMainFill);
-    g.fillPath(specFill);
-    g.setColour(theme.specMainStroke);
-    g.strokePath(specStroke, juce::PathStrokeType(1.7f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    if (showPost)
+    {
+        g.setColour(theme.specMainFill);
+        g.fillPath(specFill);
+        g.setColour(theme.specMainStroke);
+        g.strokePath(specStroke, juce::PathStrokeType(1.7f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
 
-    // 2. Spectral reduction curve (fast, high-resolution continuous curve)
+    // 3. Spectral reduction curve (fast, high-resolution continuous curve)
     juce::Path redStroke;
     juce::Path redFill;
     bool hasReduction = false;
@@ -742,7 +816,7 @@ void HybridResonanceEQEditor::drawGraphGridAndCurves(juce::Graphics& g)
         g.strokePath(redStroke, juce::PathStrokeType(1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
-    // 3. Combined EQ curve
+    // 4. Combined EQ curve
     juce::Path eqCurve;
     const int steps = 256;
     for (int s = 0; s <= steps; ++s)

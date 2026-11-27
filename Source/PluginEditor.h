@@ -49,9 +49,16 @@ private:
     juce::Label tiltLabel;
     juce::ComboBox tiltCombo;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> tiltAttachment;
+    juce::Label specResolutionLabel;
+    juce::ComboBox specResolutionCombo;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> specResolutionAttachment;
 
     juce::TextButton bypassButton { "Bypass" };
+    juce::ToggleButton preAnalyzerButton { "Pre" };
+    juce::ToggleButton postAnalyzerButton { "Post" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> preAnalyzerAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> postAnalyzerAttachment;
 
     // Bottom band strip (Pro-Q 4 style per-band controls in English, without manual Freq/Q sliders)
     juce::Label selectedBandLabel;
@@ -74,11 +81,12 @@ private:
     int draggingBand = -1;
 
     static constexpr int renderPoints = 512;
-    std::array<float, dspcore::SpectralResonanceEngine::numBins> rawPreBins {};
-    std::array<float, dspcore::SpectralResonanceEngine::numBins> rawPostBins {};
-    std::array<float, dspcore::SpectralResonanceEngine::numBins> rawRedBins {};
+    std::array<float, HybridResonanceEQProcessor::analyzerNumBins> rawPreBins {};
+    std::array<float, HybridResonanceEQProcessor::analyzerNumBins> rawPostBins {};
+    std::array<float, HybridResonanceEQProcessor::analyzerNumBins> rawRedBins {};
 
     std::array<float, renderPoints> smoothMainCurve {};
+    std::array<float, renderPoints> smoothPreCurve {};
     std::array<float, renderPoints> fastRedCurve {};
 
     void timerCallback() override;
