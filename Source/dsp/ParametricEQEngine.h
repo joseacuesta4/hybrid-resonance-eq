@@ -12,15 +12,23 @@ class ParametricEQEngine
 public:
     static constexpr int maxBands = 16;
 
-    void prepare(double newSampleRate, int /*maxBlockSize*/)
+    void prepare(double newSampleRate, int maxBlockSize)
     {
         sampleRate = juce::jmax(8000.0, newSampleRate);
         for (auto& band : bands)
-            band.prepare(newSampleRate);
+            band.prepare(sampleRate);
 
         soloFilter.prepare(sampleRate);
-        soloMixSmooth = 0.0f;
+
+        // Allocate the Solo scratch buffer before audio processing starts.
+        soloDryBuffer.setSize(
+            2,
+            juce::jmax(1, maxBlockSize),
+            false,
+            false,
+            true);
         soloDryBuffer.clear();
+        soloMixSmooth = 0.0f;
     }
 
     void reset()
@@ -73,11 +81,9 @@ public:
 
         if (soloIndex >= 0)
         {
-            if (soloDryBuffer.getNumSamples() < numSamples)
-                soloDryBuffer.setSize(2, numSamples, false, false, true);
-
-            soloDryBuffer.copyFrom(0, 0, left, numSamples);
-            soloDryBuffer.copyFrom(1, 0, right, numSamples);
+            const int scratchCapacity = soloDryBuffer.getNumSamples();
+            if (scratchCapacity <= 0)
+                return; // prepare() must run before processing.
 
             const auto& srcBand = bands[static_cast<size_t>(soloIndex)].getParameters();
             BandParams inspectParams = srcBand;
@@ -88,17 +94,27 @@ public:
             inspectParams.q = juce::jlimit(0.4f, 6.0f, srcBand.q > 0.1f ? srcBand.q : 1.0f);
 
             soloFilter.setParameters(inspectParams);
-            soloFilter.processBlock(left, right, numSamples, 1.0f);
-
-            const auto* dryL = soloDryBuffer.getReadPointer(0);
-            const auto* dryR = soloDryBuffer.getReadPointer(1);
             const float coeff = std::exp(-1.0f / (0.015f * static_cast<float>(sampleRate)));
 
-            for (int i = 0; i < numSamples; ++i)
+            // Process oversized blocks in chunks using the preallocated buffer.
+            for (int offset = 0; offset < numSamples; offset += scratchCapacity)
             {
-                soloMixSmooth = coeff * soloMixSmooth + (1.0f - coeff) * 1.0f;
-                left[i] = dryL[i] * (1.0f - soloMixSmooth) + left[i] * soloMixSmooth;
-                right[i] = dryR[i] * (1.0f - soloMixSmooth) + right[i] * soloMixSmooth;
+                const int chunkSize = juce::jmin(scratchCapacity, numSamples - offset);
+                soloDryBuffer.copyFrom(0, 0, left + offset, chunkSize);
+                soloDryBuffer.copyFrom(1, 0, right + offset, chunkSize);
+
+                soloFilter.processBlock(left + offset, right + offset, chunkSize, 1.0f);
+
+                const auto* dryL = soloDryBuffer.getReadPointer(0);
+                const auto* dryR = soloDryBuffer.getReadPointer(1);
+                for (int i = 0; i < chunkSize; ++i)
+                {
+                    soloMixSmooth = coeff * soloMixSmooth + (1.0f - coeff);
+                    left[offset + i] = dryL[i] * (1.0f - soloMixSmooth)
+                                     + left[offset + i] * soloMixSmooth;
+                    right[offset + i] = dryR[i] * (1.0f - soloMixSmooth)
+                                      + right[offset + i] * soloMixSmooth;
+                }
             }
             return;
         }
