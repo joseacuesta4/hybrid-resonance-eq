@@ -102,14 +102,7 @@ HybridResonanceEQProcessor::HybridResonanceEQProcessor()
                      .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       apvts(*this, nullptr, "Parameters", createParameterLayout())
 {
-    fifoL.assign(static_cast<size_t>(fftSize), 0.0f);
-    fifoR.assign(static_cast<size_t>(fftSize), 0.0f);
     fftWorkspace.assign(static_cast<size_t>(fftSize * 2), 0.0f);
-    olaBufferL.assign(static_cast<size_t>(fftSize * 2), 0.0f);
-    olaBufferR.assign(static_cast<size_t>(fftSize * 2), 0.0f);
-    olaNormBuffer.assign(static_cast<size_t>(fftSize * 2), 0.0f);
-    binEnvelope.assign(static_cast<size_t>(numBins), 0.0f);
-    binReductionDb.assign(static_cast<size_t>(numBins), 0.0f);
 
     preSpectrumSmooth.fill(-100.0f);
     postSpectrumSmooth.fill(-100.0f);
@@ -125,6 +118,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout HybridResonanceEQProcessor::
     params.push_back(std::make_unique<juce::AudioParameterChoice>(
         "ana_resolution", "Analyzer Resolution",
         juce::StringArray { "Low", "Medium", "High", "Maximum" }, 2));
+
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        "spec_resolution", "Spectral Processing Resolution",
+        juce::StringArray { "Low Latency 2048", "High Quality 4096" }, 1));
 
     params.push_back(std::make_unique<juce::AudioParameterChoice>(
         "ana_speed", "Analyzer Speed",
@@ -251,16 +248,21 @@ void HybridResonanceEQProcessor::resetDSPState()
         st.currentDynDb = 0.0f;
         st.filterL.reset();
         st.filterR.reset();
+        st.detectorL.reset();
+        st.detectorR.reset();
     }
+    soloMonitorFilter.reset();
+    spectralEngine.reset();
 
-    std::fill(fifoL.begin(), fifoL.end(), 0.0f);
-    std::fill(fifoR.begin(), fifoR.end(), 0.0f);
-    std::fill(olaBufferL.begin(), olaBufferL.end(), 0.0f);
-    std::fill(olaBufferR.begin(), olaBufferR.end(), 0.0f);
-    std::fill(olaNormBuffer.begin(), olaNormBuffer.end(), 0.0f);
-    std::fill(binEnvelope.begin(), binEnvelope.end(), 0.0f);
-    std::fill(binReductionDb.begin(), binReductionDb.end(), 0.0f);
-    fifoIndex = 0;
+    preSpectrumSmooth.fill(-100.0f);
+    postSpectrumSmooth.fill(-100.0f);
+    reductionSmooth.fill(0.0f);
+    for (int b = 0; b < numBins; ++b)
+    {
+        publishedPreSpectrum[static_cast<size_t>(b)].store(-100.0f, std::memory_order_relaxed);
+        publishedPostSpectrum[static_cast<size_t>(b)].store(-100.0f, std::memory_order_relaxed);
+        publishedReduction[static_cast<size_t>(b)].store(0.0f, std::memory_order_relaxed);
+    }
 
     const bool bypassed = apvts.getRawParameterValue("global_bypass")->load() > 0.5f;
     bypassMixSmooth.setCurrentAndTargetValue(bypassed ? 0.0f : 1.0f);
@@ -278,7 +280,15 @@ void HybridResonanceEQProcessor::prepareToPlay(double sampleRate, int samplesPer
     {
         st.filterL.prepare(spec);
         st.filterR.prepare(spec);
+        st.detectorL.prepare(spec);
+        st.detectorR.prepare(spec);
     }
+    soloMonitorFilter.prepare(currentSampleRate);
+    spectralEngine.prepare(currentSampleRate, currentBlockSize);
+    dryScratch.setSize(2, currentBlockSize, false, false, true);
+    bandScratch.setSize(2, currentBlockSize, false, false, true);
+    setLatencySamples(0);
+    lastReportedLatency = 0;
 
     bypassMixSmooth.reset(currentSampleRate, 0.012);
     outputGainSmooth.reset(currentSampleRate, 0.015);
@@ -335,158 +345,20 @@ void HybridResonanceEQProcessor::updateBandFilters(double sampleRate)
             : bandStates[static_cast<size_t>(i)].currentDynDb;
 
         auto coeffs = makeCoefficientsForShape(shape, sampleRate, freq, effectiveGain, qVal, slope);
+        auto detectorCoeffs = juce::dsp::IIR::Coefficients<float>::makeBandPass(
+            juce::jmax(8000.0, sampleRate),
+            juce::jlimit(20.0, sampleRate * 0.48, static_cast<double>(freq)),
+            juce::jlimit(0.2, 18.0, static_cast<double>(qVal)));
+        auto& state = bandStates[static_cast<size_t>(i)];
         if (coeffs != nullptr)
         {
-            *bandStates[static_cast<size_t>(i)].filterL.coefficients = *coeffs;
-            *bandStates[static_cast<size_t>(i)].filterR.coefficients = *coeffs;
+            *state.filterL.coefficients = *coeffs;
+            *state.filterR.coefficients = *coeffs;
         }
-    }
-}
-
-void HybridResonanceEQProcessor::processSpectralStage(juce::AudioBuffer<float>& buffer,
-                                                     bool anySpecEnabled,
-                                                     float depth,
-                                                     float sharpness,
-                                                     float smoothing,
-                                                     float mix,
-                                                     bool deltaMode)
-{
-    const int numSamples = buffer.getNumSamples();
-    const int numChannels = buffer.getNumChannels();
-    if (numSamples <= 0 || numChannels < 2)
-        return;
-
-    if (!anySpecEnabled || depth <= 0.0001f || mix <= 0.0001f)
-    {
-        for (int b = 0; b < numBins; ++b)
+        if (detectorCoeffs != nullptr)
         {
-            const size_t idx = static_cast<size_t>(b);
-            binEnvelope[idx] *= 0.85f;
-            binReductionDb[idx] = 0.0f;
-        }
-        return;
-    }
-
-    juce::AudioBuffer<float> dryBuffer;
-    dryBuffer.makeCopyOf(buffer, true);
-
-    auto* leftPtr = buffer.getWritePointer(0);
-    auto* rightPtr = buffer.getWritePointer(1);
-
-    const float sr = static_cast<float>(juce::jmax(8000.0, currentSampleRate));
-    const float binHz = sr / static_cast<float>(fftSize);
-    const float maxAttenDb = -3.0f - depth * 18.0f;
-
-    std::array<bool, numBins> activeBinMask {};
-    activeBinMask.fill(false);
-
-    for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
-    {
-        const auto prefix = bandParamId(i, "");
-        const bool enabled = apvts.getRawParameterValue(prefix + "enabled")->load() > 0.5f;
-        const bool specOn = apvts.getRawParameterValue(prefix + "spec_enabled")->load() > 0.5f;
-        if (!enabled || !specOn)
-            continue;
-
-        const float centerFreq = juce::jlimit(25.0f, sr * 0.48f, apvts.getRawParameterValue(prefix + "freq")->load());
-        const float qVal = juce::jlimit(0.2f, 12.0f, apvts.getRawParameterValue(prefix + "q")->load());
-        const float bandwidthOct = 1.0f / juce::jmax(0.25f, qVal);
-        const float fLow = centerFreq * std::pow(2.0f, -bandwidthOct * 0.75f);
-        const float fHigh = centerFreq * std::pow(2.0f, bandwidthOct * 0.75f);
-
-        for (int b = 1; b < numBins; ++b)
-        {
-            const float f = static_cast<float>(b) * binHz;
-            if (f >= fLow && f <= fHigh)
-                activeBinMask[static_cast<size_t>(b)] = true;
-        }
-    }
-
-    const int localRadius = juce::jlimit(2, 16, static_cast<int>(std::round(14.0f - sharpness * 10.0f)));
-    const float envAlpha = juce::jlimit(0.08f, 0.90f, 0.72f - smoothing * 0.52f);
-
-    float frameAttenLinear = 1.0f;
-
-    for (int n = 0; n < numSamples; ++n)
-    {
-        fifoL[static_cast<size_t>(fifoIndex)] = leftPtr[n];
-        fifoR[static_cast<size_t>(fifoIndex)] = rightPtr[n];
-        ++fifoIndex;
-
-        if (fifoIndex >= hopSize)
-        {
-            fifoIndex = 0;
-            std::memmove(fifoL.data(), fifoL.data() + hopSize, static_cast<size_t>(fftSize - hopSize) * sizeof(float));
-            std::memmove(fifoR.data(), fifoR.data() + hopSize, static_cast<size_t>(fftSize - hopSize) * sizeof(float));
-
-            std::fill(fftWorkspace.begin(), fftWorkspace.end(), 0.0f);
-            for (int k = 0; k < fftSize; ++k)
-            {
-                const float mono = 0.5f * (fifoL[static_cast<size_t>(k)] + fifoR[static_cast<size_t>(k)]);
-                fftWorkspace[static_cast<size_t>(k)] = mono;
-            }
-            hannWindow.multiplyWithWindowingTable(fftWorkspace.data(), static_cast<size_t>(fftSize));
-            forwardFFT.performFrequencyOnlyForwardTransform(fftWorkspace.data());
-
-            double sumActiveGain = 0.0;
-            int activeCount = 0;
-
-            for (int b = 1; b < numBins; ++b)
-            {
-                const size_t idx = static_cast<size_t>(b);
-                const float mag = fftWorkspace[idx] / static_cast<float>(fftSize * 0.5f);
-                const float db = gainToDb(mag);
-
-                float localSum = 0.0f;
-                int count = 0;
-                const int bStart = juce::jmax(1, b - localRadius);
-                const int bEnd = juce::jmin(numBins - 1, b + localRadius);
-                for (int m = bStart; m <= bEnd; ++m)
-                {
-                    const float mMag = fftWorkspace[static_cast<size_t>(m)] / static_cast<float>(fftSize * 0.5f);
-                    localSum += gainToDb(mMag);
-                    ++count;
-                }
-                const float localAvgDb = (count > 0) ? (localSum / static_cast<float>(count)) : db;
-                const float thresholdProminence = 2.2f - sharpness * 1.4f;
-                const float prominenceDb = db - localAvgDb - thresholdProminence;
-
-                float targetRedDb = 0.0f;
-                if (activeBinMask[idx] && prominenceDb > 0.0f)
-                {
-                    const float normPeak = juce::jlimit(0.0f, 1.0f, prominenceDb / 10.0f);
-                    const float shaped = std::pow(normPeak, 0.65f + sharpness * 0.75f);
-                    targetRedDb = juce::jlimit(maxAttenDb, 0.0f, -shaped * std::abs(maxAttenDb));
-                }
-
-                binEnvelope[idx] += (targetRedDb - binEnvelope[idx]) * envAlpha;
-                binReductionDb[idx] = binEnvelope[idx];
-
-                if (activeBinMask[idx])
-                {
-                    sumActiveGain += static_cast<double>(dbToGain(binReductionDb[idx]));
-                    ++activeCount;
-                }
-            }
-
-            const float avgGain = (activeCount > 0)
-                ? juce::jlimit(0.12f, 1.0f, static_cast<float>(sumActiveGain / static_cast<double>(activeCount)))
-                : 1.0f;
-            frameAttenLinear = 1.0f - (1.0f - avgGain) * depth * mix;
-        }
-
-        leftPtr[n] *= frameAttenLinear;
-        rightPtr[n] *= frameAttenLinear;
-    }
-
-    if (deltaMode)
-    {
-        for (int ch = 0; ch < numChannels; ++ch)
-        {
-            auto* out = buffer.getWritePointer(ch);
-            const auto* dry = dryBuffer.getReadPointer(ch);
-            for (int n = 0; n < numSamples; ++n)
-                out[n] = (dry[n] - out[n]) * 1.5f;
+            *state.detectorL.coefficients = *detectorCoeffs;
+            *state.detectorR.coefficients = *detectorCoeffs;
         }
     }
 }
@@ -500,8 +372,12 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     if (numChannels <= 0 || numSamples <= 0)
         return;
 
-    juce::AudioBuffer<float> dryBuffer;
-    dryBuffer.makeCopyOf(buffer, true);
+    if (dryScratch.getNumSamples() < numSamples)
+    {
+        dryScratch.setSize(2, numSamples, false, false, true);
+        bandScratch.setSize(2, numSamples, false, false, true);
+    }
+    dryScratch.makeCopyOf(buffer, true);
 
     const bool bypassed = apvts.getRawParameterValue("global_bypass")->load() > 0.5f;
     bypassMixSmooth.setTargetValue(bypassed ? 0.0f : 1.0f);
@@ -529,6 +405,7 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     }
 
     const float gainScale = apvts.getRawParameterValue("gain_scale")->load();
+    updateBandFilters(currentSampleRate); // detector filters follow current band frequency/Q
     for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
     {
         auto& st = bandStates[static_cast<size_t>(i)];
@@ -539,6 +416,9 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
         if (!enabled || !dynOn)
         {
             st.currentDynDb = 0.0f;
+            st.envLevelDb = -120.0f;
+            st.detectorL.reset();
+            st.detectorR.reset();
             continue;
         }
 
@@ -548,14 +428,16 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
         const float attackMs = juce::jmax(0.5f, apvts.getRawParameterValue(prefix + "dyn_attack")->load());
         const float releaseMs = juce::jmax(10.0f, apvts.getRawParameterValue(prefix + "dyn_release")->load());
 
+        // Measure only the frequency region of this band; a full-band RMS detector
+        // makes every dynamic band react to unrelated low/high-frequency energy.
         float sumSq = 0.0f;
-        for (int ch = 0; ch < numChannels; ++ch)
+        for (int n = 0; n < numSamples; ++n)
         {
-            const auto* ptr = buffer.getReadPointer(ch);
-            for (int n = 0; n < numSamples; ++n)
-                sumSq += ptr[n] * ptr[n];
+            const float detL = st.detectorL.processSample(buffer.getReadPointer(0)[n]);
+            const float detR = st.detectorR.processSample(buffer.getReadPointer(1)[n]);
+            sumSq += 0.5f * (detL * detL + detR * detR);
         }
-        const float rms = std::sqrt(sumSq / static_cast<float>(juce::jmax(1, numChannels * numSamples)));
+        const float rms = std::sqrt(sumSq / static_cast<float>(juce::jmax(1, numSamples)));
         const float inputDb = gainToDb(rms);
 
         const float coeffMs = (inputDb > st.envLevelDb) ? attackMs : releaseMs;
@@ -570,76 +452,107 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
 
     updateBandFilters(currentSampleRate);
 
-    juce::AudioBuffer<float> soloSumBuffer;
-    soloSumBuffer.setSize(numChannels, numSamples);
-    soloSumBuffer.clear();
-
-    for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
+    if (anySoloActive)
     {
-        auto& st = bandStates[static_cast<size_t>(i)];
-        const auto prefix = bandParamId(i, "");
-        const bool enabled = apvts.getRawParameterValue(prefix + "enabled")->load() > 0.5f;
-        if (!enabled)
-            continue;
-
-        const bool soloOn = apvts.getRawParameterValue(prefix + "solo")->load() > 0.5f;
-        const int charMode = static_cast<int>(apvts.getRawParameterValue(prefix + "character")->load());
-
-        juce::AudioBuffer<float> bandBuf;
-        bandBuf.makeCopyOf(buffer, true);
-
-        for (int ch = 0; ch < numChannels; ++ch)
+        int soloIndex = -1;
+        for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
         {
-            auto* ptr = bandBuf.getWritePointer(ch);
-            for (int n = 0; n < numSamples; ++n)
+            const auto prefix = bandParamId(i, "");
+            if (apvts.getRawParameterValue(prefix + "enabled")->load() > 0.5f
+                && apvts.getRawParameterValue(prefix + "solo")->load() > 0.5f)
             {
-                float s = ptr[n];
-                s = (ch == 0) ? st.filterL.processSample(s) : st.filterR.processSample(s);
-                s = applyBandCharacterSample(s, charMode);
-                ptr[n] = s;
+                soloIndex = i;
+                break;
             }
         }
 
-        if (anySoloActive)
+        if (soloIndex >= 0)
         {
-            if (soloOn)
-            {
-                const auto shape = static_cast<dspcore::FilterShape>(
-                    static_cast<int>(apvts.getRawParameterValue(prefix + "shape")->load()));
-                const float bandGainDb = dspcore::BandFilter::supportsGain(shape)
-                    ? (apvts.getRawParameterValue(prefix + "gain")->load() * gainScale)
-                    : 0.0f;
-                const float soloBandGain = dbToGain(bandGainDb);
-
-                for (int ch = 0; ch < numChannels; ++ch)
-                    soloSumBuffer.addFrom(ch, 0, bandBuf, ch, 0, numSamples, soloBandGain);
-            }
+            const auto prefix = bandParamId(soloIndex, "");
+            dspcore::BandParams monitorParams;
+            monitorParams.enabled = true;
+            monitorParams.shape = dspcore::FilterShape::BandPass;
+            monitorParams.freqHz = apvts.getRawParameterValue(prefix + "freq")->load();
+            monitorParams.q = juce::jlimit(0.35f, 8.0f,
+                apvts.getRawParameterValue(prefix + "q")->load());
+            monitorParams.gainDb = 0.0f;
+            monitorParams.dynamicEnabled = false;
+            monitorParams.route = dspcore::ChannelRoute::Stereo;
+            soloMonitorFilter.setParameters(monitorParams);
+            buffer.makeCopyOf(dryScratch, true);
+            soloMonitorFilter.processBlock(buffer.getWritePointer(0),
+                                           buffer.getWritePointer(1), numSamples);
         }
-        else
+    }
+    else
+    {
+        for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
         {
-            buffer.makeCopyOf(bandBuf, true);
+            auto& st = bandStates[static_cast<size_t>(i)];
+            const auto prefix = bandParamId(i, "");
+            if (apvts.getRawParameterValue(prefix + "enabled")->load() <= 0.5f)
+                continue;
+
+            const int charMode = static_cast<int>(apvts.getRawParameterValue(prefix + "character")->load());
+            bandScratch.makeCopyOf(buffer, true);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                auto* ptr = bandScratch.getWritePointer(ch);
+                for (int n = 0; n < numSamples; ++n)
+                {
+                    float sample = ptr[n];
+                    sample = (ch == 0) ? st.filterL.processSample(sample)
+                                       : st.filterR.processSample(sample);
+                    ptr[n] = applyBandCharacterSample(sample, charMode);
+                }
+            }
+            buffer.makeCopyOf(bandScratch, true);
         }
     }
 
-    if (anySoloActive)
-        buffer.makeCopyOf(soloSumBuffer, true);
+    dspcore::SpectralConfig spectralConfig;
+    spectralConfig.enabled = anySpecActive && !anySoloActive && !bypassed;
+    spectralConfig.deltaListen = apvts.getRawParameterValue("spec_delta")->load() > 0.5f;
+    spectralConfig.depth = apvts.getRawParameterValue("spec_depth")->load();
+    spectralConfig.sharpness = apvts.getRawParameterValue("spec_sharpness")->load();
+    spectralConfig.smoothing = apvts.getRawParameterValue("spec_smoothing")->load();
+    spectralConfig.mix = apvts.getRawParameterValue("spec_mix")->load();
+    spectralConfig.resolution = static_cast<dspcore::SpectralResolution>(
+        juce::jlimit(0, 1, static_cast<int>(apvts.getRawParameterValue("spec_resolution")->load())));
 
-    const float specDepth = apvts.getRawParameterValue("spec_depth")->load();
-    const float specSharp = apvts.getRawParameterValue("spec_sharpness")->load();
-    const float specSmooth = apvts.getRawParameterValue("spec_smoothing")->load();
-    const float specMix = apvts.getRawParameterValue("spec_mix")->load();
-    const bool specDelta = apvts.getRawParameterValue("spec_delta")->load() > 0.5f;
-
-    processSpectralStage(buffer, anySpecActive, specDepth, specSharp, specSmooth, specMix, specDelta);
-
-    for (int ch = 0; ch < numChannels; ++ch)
+    for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
     {
-        auto* out = buffer.getWritePointer(ch);
-        for (int n = 0; n < numSamples; ++n)
+        const auto prefix = bandParamId(i, "");
+        auto& spectralBand = spectralConfig.bandWindows[static_cast<size_t>(i)];
+        spectralBand.active = apvts.getRawParameterValue(prefix + "enabled")->load() > 0.5f
+                          && apvts.getRawParameterValue(prefix + "spec_enabled")->load() > 0.5f;
+        spectralBand.centerFreqHz = apvts.getRawParameterValue(prefix + "freq")->load();
+        spectralBand.q = apvts.getRawParameterValue(prefix + "q")->load();
+        spectralBand.rangeDb = -std::abs(apvts.getRawParameterValue(prefix + "dyn_range")->load());
+        spectralBand.thresholdDb = apvts.getRawParameterValue(prefix + "dyn_thresh")->load();
+        spectralBand.autoThreshold = apvts.getRawParameterValue(prefix + "dyn_auto")->load() > 0.5f;
+        if (spectralBand.active)
         {
-            const float gOut = outputGainSmooth.getNextValue();
-            out[n] = out[n] * phaseSign * gOut;
+            spectralConfig.attackMs = apvts.getRawParameterValue(prefix + "dyn_attack")->load();
+            spectralConfig.releaseMs = apvts.getRawParameterValue(prefix + "dyn_release")->load();
         }
+    }
+    spectralEngine.setConfig(spectralConfig);
+    spectralEngine.processBlock(buffer);
+    const int requestedLatency = spectralEngine.getLatencySamples();
+    if (requestedLatency != lastReportedLatency)
+    {
+        setLatencySamples(requestedLatency);
+        lastReportedLatency = requestedLatency;
+    }
+
+    // Advance the gain smoother once per sample, not once per channel.
+    for (int n = 0; n < numSamples; ++n)
+    {
+        const float gOut = outputGainSmooth.getNextValue();
+        for (int ch = 0; ch < numChannels; ++ch)
+            buffer.getWritePointer(ch)[n] *= phaseSign * gOut;
     }
 
     for (int n = 0; n < numSamples; ++n)
@@ -649,16 +562,16 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
         for (int ch = 0; ch < numChannels; ++ch)
         {
             auto* out = buffer.getWritePointer(ch);
-            const auto* dry = dryBuffer.getReadPointer(ch);
+            const auto* dry = dryScratch.getReadPointer(ch);
             out[n] = dry[n] * dryAmt + out[n] * wetAmt;
         }
     }
 
-    updateSpectrumVisuals(dryBuffer, buffer);
+    updateSpectrumVisuals(dryScratch, buffer);
 }
 
 void HybridResonanceEQProcessor::updateSpectrumVisuals(const juce::AudioBuffer<float>& preBuffer,
-                                                      const juce::AudioBuffer<float>& postBuffer)
+                                                       const juce::AudioBuffer<float>& postBuffer)
 {
     const int numSamples = juce::jmin(preBuffer.getNumSamples(), postBuffer.getNumSamples());
     const int numChannels = juce::jmin(preBuffer.getNumChannels(), postBuffer.getNumChannels());
@@ -666,35 +579,68 @@ void HybridResonanceEQProcessor::updateSpectrumVisuals(const juce::AudioBuffer<f
         return;
 
     const int speedIdx = static_cast<int>(apvts.getRawParameterValue("ana_speed")->load());
-    const float mainAlpha = (speedIdx == 0) ? 0.03f : ((speedIdx == 1) ? 0.075f : 0.14f);
-    const float redAlpha = 0.50f;
+    const float alpha = (speedIdx == 0) ? 0.18f : ((speedIdx == 1) ? 0.32f : 0.55f);
+    const int tiltIdx = static_cast<int>(apvts.getRawParameterValue("ana_tilt")->load());
+    const float tiltDbPerOct = (tiltIdx == 0) ? 0.0f : ((tiltIdx == 1) ? 3.0f : ((tiltIdx == 2) ? 4.5f : 6.0f));
 
-    float preSq = 0.0f;
-    float postSq = 0.0f;
-    for (int ch = 0; ch < numChannels; ++ch)
+    auto analyze = [this, numSamples, numChannels, tiltDbPerOct](const juce::AudioBuffer<float>& source,
+                                                                 std::array<float, numBins>& smoothed)
     {
-        const auto* preP = preBuffer.getReadPointer(ch);
-        const auto* postP = postBuffer.getReadPointer(ch);
-        for (int n = 0; n < numSamples; ++n)
+        std::fill(fftWorkspace.begin(), fftWorkspace.end(), 0.0f);
+        const int copySamples = juce::jmin(numSamples, fftSize);
+        const int sourceStart = numSamples - copySamples;
+        const int destStart = fftSize - copySamples;
+
+        for (int n = 0; n < copySamples; ++n)
         {
-            preSq += preP[n] * preP[n];
-            postSq += postP[n] * postP[n];
+            float mono = 0.0f;
+            for (int ch = 0; ch < numChannels; ++ch)
+                mono += source.getReadPointer(ch)[sourceStart + n];
+            fftWorkspace[static_cast<size_t>(destStart + n)] = mono / static_cast<float>(numChannels);
         }
-    }
 
-    const float denom = static_cast<float>(juce::jmax(1, numChannels * numSamples));
-    const float preRmsDb = juce::jlimit(-100.0f, 6.0f, gainToDb(std::sqrt(preSq / denom)));
-    const float postRmsDb = juce::jlimit(-100.0f, 6.0f, gainToDb(std::sqrt(postSq / denom)));
+        hannWindow.multiplyWithWindowingTable(fftWorkspace.data(), static_cast<size_t>(fftSize));
+        forwardFFT.performRealOnlyForwardTransform(fftWorkspace.data(), true);
 
+        constexpr float windowSumApprox = static_cast<float>(fftSize) * 0.5f;
+        const float magnitudeScale = 2.0f / windowSumApprox;
+        const float binHz = static_cast<float>(currentSampleRate / static_cast<double>(fftSize));
+
+        for (int b = 0; b < numBins; ++b)
+        {
+            float magnitude = 0.0f;
+            if (b == 0)
+                magnitude = std::abs(fftWorkspace[0]) / windowSumApprox;
+            else if (b == fftSize / 2)
+                magnitude = std::abs(fftWorkspace[1]) / windowSumApprox;
+            else
+            {
+                const size_t re = static_cast<size_t>(2 * b);
+                const size_t im = re + 1;
+                magnitude = std::hypot(fftWorkspace[re], fftWorkspace[im]) * magnitudeScale;
+            }
+            const float freq = juce::jmax(1.0f, static_cast<float>(b) * binHz);
+            const float tilt = tiltDbPerOct * std::log2(freq / 1000.0f);
+            const float targetDb = juce::jlimit(-120.0f, 12.0f,
+                juce::Decibels::gainToDecibels(magnitude + 1.0e-9f) + tilt);
+            const size_t idx = static_cast<size_t>(b);
+            smoothed[idx] += (targetDb - smoothed[idx]) * alpha;
+        }
+    };
+
+    analyze(preBuffer, preSpectrumSmooth);
+    analyze(postBuffer, postSpectrumSmooth);
+    spectralEngine.getReduction(spectralReduction);
     for (int b = 0; b < numBins; ++b)
     {
         const size_t idx = static_cast<size_t>(b);
-        const float targetPre = juce::jlimit(-100.0f, 6.0f, preRmsDb);
-        const float targetPost = juce::jlimit(-100.0f, 6.0f, postRmsDb);
-
-        preSpectrumSmooth[idx] += (targetPre - preSpectrumSmooth[idx]) * mainAlpha;
-        postSpectrumSmooth[idx] += (targetPost - postSpectrumSmooth[idx]) * mainAlpha;
-        reductionSmooth[idx] += (binReductionDb[idx] - reductionSmooth[idx]) * redAlpha;
+        const size_t spectralIndex = (spectralEngine.getConfig().resolution == dspcore::SpectralResolution::Low)
+            ? juce::jmin(static_cast<size_t>(spectralEngine.getActiveNumBins() - 1), idx)
+            : juce::jmin(static_cast<size_t>(spectralEngine.getActiveNumBins() - 1), idx * 2);
+        reductionSmooth[idx] += (spectralReduction[spectralIndex] - reductionSmooth[idx]) * 0.5f;
+        publishedPreSpectrum[idx].store(preSpectrumSmooth[idx], std::memory_order_relaxed);
+        publishedPostSpectrum[idx].store(postSpectrumSmooth[idx], std::memory_order_relaxed);
+        publishedReduction[idx].store(reductionSmooth[idx], std::memory_order_relaxed);
     }
 }
 
@@ -739,17 +685,17 @@ float HybridResonanceEQProcessor::getAutoGainCompensationDb() const noexcept
     return autoGainCompDb.load();
 }
 
-void HybridResonanceEQProcessor::getVisualData(std::array<float, dspcore::SpectralResonanceEngine::numBins>& preOut,
-                                               std::array<float, dspcore::SpectralResonanceEngine::numBins>& postOut,
-                                               std::array<float, dspcore::SpectralResonanceEngine::numBins>& redOut) const noexcept
+void HybridResonanceEQProcessor::getVisualData(std::array<float, analyzerNumBins>& preOut,
+                                               std::array<float, analyzerNumBins>& postOut,
+                                               std::array<float, analyzerNumBins>& redOut) const noexcept
 {
-    const int copyCount = juce::jmin(static_cast<int>(dspcore::SpectralResonanceEngine::numBins), numBins);
+    const int copyCount = analyzerNumBins;
     for (int i = 0; i < copyCount; ++i)
     {
         const size_t idx = static_cast<size_t>(i);
-        preOut[idx] = preSpectrumSmooth[idx];
-        postOut[idx] = postSpectrumSmooth[idx];
-        redOut[idx] = reductionSmooth[idx];
+        preOut[idx] = publishedPreSpectrum[idx].load(std::memory_order_relaxed);
+        postOut[idx] = publishedPostSpectrum[idx].load(std::memory_order_relaxed);
+        redOut[idx] = publishedReduction[idx].load(std::memory_order_relaxed);
     }
 }
 
