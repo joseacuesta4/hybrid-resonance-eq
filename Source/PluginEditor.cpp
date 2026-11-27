@@ -408,4 +408,345 @@ void HybridResonanceEQEditor::copySelectedBand()
     copiedBand.dynamicEnabled = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "dyn_enabled"))->load() > 0.5f;
     copiedBand.autoThreshold = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "dyn_auto"))->load() > 0.5f;
     copiedBand.spectralEnabled = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "spec_enabled"))->load() > 0.5f;
-    copiedBand.shape = static_cast
+    copiedBand.shape = static_cast<int>(audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "shape"))->load());
+    copiedBand.route = static_cast<int>(audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "route"))->load());
+    copiedBand.freq = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "freq"))->load();
+    copiedBand.gain = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "gain"))->load();
+    copiedBand.q = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "q"))->load();
+    copiedBand.slope = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "slope"))->load();
+    copiedBand.dynRange = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "dyn_range"))->load();
+    copiedBand.dynThresh = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "dyn_thresh"))->load();
+    copiedBand.dynAttack = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "dyn_attack"))->load();
+    copiedBand.dynRelease = audioProcessor.apvts.getRawParameterValue(bandParam(selectedBandIndex, "dyn_release"))->load();
+}
+
+void HybridResonanceEQEditor::pasteToSelectedBand()
+{
+    if (!copiedBand.valid)
+        return;
+
+    auto setBool = [this](const juce::String& id, bool v)
+    {
+        if (auto* p = audioProcessor.apvts.getParameter(id))
+            p->setValueNotifyingHost(v ? 1.0f : 0.0f);
+    };
+    auto setFloat = [this](const juce::String& id, float v)
+    {
+        if (auto* p = dynamic_cast<juce::RangedAudioParameter*>(audioProcessor.apvts.getParameter(id)))
+            p->setValueNotifyingHost(p->convertTo0to1(v));
+    };
+
+    setBool(bandParam(selectedBandIndex, "enabled"), copiedBand.enabled);
+    setBool(bandParam(selectedBandIndex, "solo"), copiedBand.solo);
+    setBool(bandParam(selectedBandIndex, "dyn_enabled"), copiedBand.dynamicEnabled);
+    setBool(bandParam(selectedBandIndex, "dyn_auto"), copiedBand.autoThreshold);
+    setBool(bandParam(selectedBandIndex, "spec_enabled"), copiedBand.spectralEnabled);
+    setFloat(bandParam(selectedBandIndex, "shape"), static_cast<float>(copiedBand.shape));
+    setFloat(bandParam(selectedBandIndex, "route"), static_cast<float>(copiedBand.route));
+    setFloat(bandParam(selectedBandIndex, "freq"), copiedBand.freq);
+    setFloat(bandParam(selectedBandIndex, "gain"), copiedBand.gain);
+    setFloat(bandParam(selectedBandIndex, "q"), copiedBand.q);
+    setFloat(bandParam(selectedBandIndex, "slope"), copiedBand.slope);
+    setFloat(bandParam(selectedBandIndex, "dyn_range"), copiedBand.dynRange);
+    setFloat(bandParam(selectedBandIndex, "dyn_thresh"), copiedBand.dynThresh);
+    setFloat(bandParam(selectedBandIndex, "dyn_attack"), copiedBand.dynAttack);
+    setFloat(bandParam(selectedBandIndex, "dyn_release"), copiedBand.dynRelease);
+
+    updateContextualBandControls();
+    repaint();
+}
+
+void HybridResonanceEQEditor::toggleABState()
+{
+    juce::MemoryBlock currentBlock;
+    audioProcessor.getStateInformation(currentBlock);
+
+    if (!activeSlotB)
+    {
+        slotAState = currentBlock;
+        activeSlotB = true;
+        abButton.setButtonText("B");
+        if (slotBState.getSize() > 0)
+            audioProcessor.setStateInformation(slotBState.getData(), static_cast<int>(slotBState.getSize()));
+    }
+    else
+    {
+        slotBState = currentBlock;
+        activeSlotB = false;
+        abButton.setButtonText("A");
+        if (slotAState.getSize() > 0)
+            audioProcessor.setStateInformation(slotAState.getData(), static_cast<int>(slotAState.getSize()));
+    }
+
+    updateContextualBandControls();
+    repaint();
+}
+
+void HybridResonanceEQEditor::showContextMenuForBand(int bandIndex, juce::Point<float> screenPos)
+{
+    selectBand(bandIndex);
+
+    const bool dynOn = audioProcessor.apvts.getRawParameterValue(bandParam(bandIndex, "dyn_enabled"))->load() > 0.5f;
+    const bool specOn = audioProcessor.apvts.getRawParameterValue(bandParam(bandIndex, "spec_enabled"))->load() > 0.5f;
+    const bool soloOn = audioProcessor.apvts.getRawParameterValue(bandParam(bandIndex, "solo"))->load() > 0.5f;
+    const int curShape = static_cast<int>(audioProcessor.apvts.getRawParameterValue(bandParam(bandIndex, "shape"))->load());
+    const int curRoute = static_cast<int>(audioProcessor.apvts.getRawParameterValue(bandParam(bandIndex, "route"))->load());
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader("Band " + juce::String(bandIndex + 1));
+    menu.addItem(1, "Dynamic EQ", true, dynOn);
+    menu.addItem(2, "Spectral Suppression", true, specOn);
+    menu.addItem(3, "Solo Band", true, soloOn);
+    menu.addSeparator();
+
+    juce::PopupMenu shapeMenu;
+    const juce::StringArray shapes { "Bell", "Low Shelf", "High Shelf", "Low Cut", "High Cut", "Notch", "Band Pass", "Tilt Shelf" };
+    for (int s = 0; s < shapes.size(); ++s)
+        shapeMenu.addItem(100 + s, shapes[s], true, s == curShape);
+    menu.addSubMenu("Shape", shapeMenu);
+
+    juce::PopupMenu routeMenu;
+    const juce::StringArray routes { "Stereo", "Mid", "Side", "Left", "Right" };
+    for (int r = 0; r < routes.size(); ++r)
+        routeMenu.addItem(200 + r, routes[r], true, r == curRoute);
+    menu.addSubMenu("Stereo / Mid-Side", routeMenu);
+
+    menu.addSeparator();
+    menu.addItem(4, "Reset Gain (0.0 dB)");
+    menu.addItem(5, "Disable Band");
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea({ static_cast<int>(screenPos.x), static_cast<int>(screenPos.y), 2, 2 }),
+        [this, bandIndex](int result)
+        {
+            if (result == 0)
+                return;
+
+            auto toggleBool = [this, bandIndex](const juce::String& suffix)
+            {
+                if (auto* p = audioProcessor.apvts.getParameter(bandParam(bandIndex, suffix)))
+                    p->setValueNotifyingHost(p->getValue() > 0.5f ? 0.0f : 1.0f);
+            };
+
+            if (result == 1) toggleBool("dyn_enabled");
+            else if (result == 2) toggleBool("spec_enabled");
+            else if (result == 3) toggleBool("solo");
+            else if (result >= 100 && result < 200)
+            {
+                if (auto* p = dynamic_cast<juce::RangedAudioParameter*>(audioProcessor.apvts.getParameter(bandParam(bandIndex, "shape"))))
+                    p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(result - 100)));
+            }
+            else if (result >= 200 && result < 300)
+            {
+                if (auto* p = dynamic_cast<juce::RangedAudioParameter*>(audioProcessor.apvts.getParameter(bandParam(bandIndex, "route"))))
+                    p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(result - 200)));
+            }
+            else if (result == 4)
+            {
+                if (auto* p = dynamic_cast<juce::RangedAudioParameter*>(audioProcessor.apvts.getParameter(bandParam(bandIndex, "gain"))))
+                    p->setValueNotifyingHost(p->convertTo0to1(0.0f));
+            }
+            else if (result == 5)
+            {
+                if (auto* p = audioProcessor.apvts.getParameter(bandParam(bandIndex, "enabled")))
+                    p->setValueNotifyingHost(0.0f);
+            }
+
+            updateContextualBandControls();
+            repaint();
+        });
+}
+
+void HybridResonanceEQEditor::showContextMenuForGraph(juce::Point<float> graphPos)
+{
+    const float freq = xToFreqHz(graphPos.x);
+    const float gain = yToGainDb(graphPos.y);
+    const auto screenPos = localPointToGlobal(graphPos);
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader("Graph (" + juce::String(freq, 0) + " Hz)");
+    menu.addItem(1, "Add Band Here");
+    menu.addItem(2, "Add Dynamic Band Here");
+    menu.addItem(3, "Add Spectral Band Here");
+    menu.addSeparator();
+    menu.addItem(4, "Clear All Solo");
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea({ static_cast<int>(screenPos.x), static_cast<int>(screenPos.y), 2, 2 }),
+        [this, freq, gain](int result)
+        {
+            if (result == 1 || result == 2 || result == 3)
+            {
+                addNewBandAt(freq, gain);
+                if (result == 2)
+                {
+                    if (auto* p = audioProcessor.apvts.getParameter(bandParam(selectedBandIndex, "dyn_enabled")))
+                        p->setValueNotifyingHost(1.0f);
+                }
+                else if (result == 3)
+                {
+                    if (auto* p = audioProcessor.apvts.getParameter(bandParam(selectedBandIndex, "spec_enabled")))
+                        p->setValueNotifyingHost(1.0f);
+                }
+            }
+            else if (result == 4)
+            {
+                for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
+                {
+                    if (auto* p = audioProcessor.apvts.getParameter(bandParam(i, "solo")))
+                        p->setValueNotifyingHost(0.0f);
+                }
+            }
+
+            updateContextualBandControls();
+            repaint();
+        });
+}
+
+float HybridResonanceEQEditor::getRangeDb() const noexcept
+{
+    const int idx = static_cast<int>(audioProcessor.apvts.getRawParameterValue("display_range")->load());
+    if (idx == 0) return 6.0f;
+    if (idx == 2) return 30.0f;
+    return 12.0f;
+}
+
+float HybridResonanceEQEditor::xToFreqHz(float x) const noexcept
+{
+    const float left = static_cast<float>(graphBounds.getX());
+    const float width = juce::jmax(1.0f, static_cast<float>(graphBounds.getWidth()));
+    const float norm = juce::jlimit(0.0f, 1.0f, (x - left) / width);
+    constexpr float minF = 20.0f;
+    constexpr float maxF = 20000.0f;
+    return minF * std::pow(maxF / minF, norm);
+}
+
+float HybridResonanceEQEditor::freqHzToX(float freqHz) const noexcept
+{
+    const float left = static_cast<float>(graphBounds.getX());
+    const float width = juce::jmax(1.0f, static_cast<float>(graphBounds.getWidth()));
+    constexpr float minF = 20.0f;
+    constexpr float maxF = 20000.0f;
+    const float clamped = juce::jlimit(minF, maxF, freqHz);
+    const float norm = std::log(clamped / minF) / std::log(maxF / minF);
+    return left + norm * width;
+}
+
+float HybridResonanceEQEditor::yToGainDb(float y) const noexcept
+{
+    const float top = static_cast<float>(graphBounds.getY());
+    const float height = juce::jmax(1.0f, static_cast<float>(graphBounds.getHeight()));
+    const float rangeDb = getRangeDb();
+    const float norm = juce::jlimit(0.0f, 1.0f, (y - top) / height);
+    return rangeDb - norm * (2.0f * rangeDb);
+}
+
+float HybridResonanceEQEditor::gainDbToY(float gainDb) const noexcept
+{
+    const float top = static_cast<float>(graphBounds.getY());
+    const float height = juce::jmax(1.0f, static_cast<float>(graphBounds.getHeight()));
+    const float rangeDb = getRangeDb();
+    const float clamped = juce::jlimit(-rangeDb, rangeDb, gainDb);
+    const float norm = (rangeDb - clamped) / (2.0f * rangeDb);
+    return top + norm * height;
+}
+
+int HybridResonanceEQEditor::hitTestBandNode(juce::Point<float> pos) const noexcept
+{
+    for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
+    {
+        const bool enabled = audioProcessor.apvts.getRawParameterValue(bandParam(i, "enabled"))->load() > 0.5f;
+        if (!enabled)
+            continue;
+
+        const float freq = audioProcessor.apvts.getRawParameterValue(bandParam(i, "freq"))->load();
+        const float gain = audioProcessor.apvts.getRawParameterValue(bandParam(i, "gain"))->load();
+        const float nx = freqHzToX(freq);
+        const float ny = gainDbToY(gain);
+
+        if (pos.getDistanceFrom({ nx, ny }) <= 12.0f)
+            return i;
+    }
+    return -1;
+}
+
+void HybridResonanceEQEditor::updateBandParamFromGraph(int bandIndex, float freqHz, float gainDb)
+{
+    if (auto* fParam = dynamic_cast<juce::RangedAudioParameter*>(audioProcessor.apvts.getParameter(bandParam(bandIndex, "freq"))))
+        fParam->setValueNotifyingHost(fParam->convertTo0to1(juce::jlimit(20.0f, 20000.0f, freqHz)));
+
+    if (auto* gParam = dynamic_cast<juce::RangedAudioParameter*>(audioProcessor.apvts.getParameter(bandParam(bandIndex, "gain"))))
+        gParam->setValueNotifyingHost(gParam->convertTo0to1(juce::jlimit(-30.0f, 30.0f, gainDb)));
+}
+
+void HybridResonanceEQEditor::addNewBandAt(float freqHz, float gainDb)
+{
+    for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
+    {
+        const bool enabled = audioProcessor.apvts.getRawParameterValue(bandParam(i, "enabled"))->load() > 0.5f;
+        if (!enabled)
+        {
+            if (auto* enParam = audioProcessor.apvts.getParameter(bandParam(i, "enabled")))
+                enParam->setValueNotifyingHost(1.0f);
+
+            selectBand(i);
+            updateBandParamFromGraph(i, freqHz, gainDb);
+            return;
+        }
+    }
+}
+
+void HybridResonanceEQEditor::mouseDown(const juce::MouseEvent& e)
+{
+    const auto pos = e.position;
+    if (!graphBounds.toFloat().contains(pos))
+        return;
+
+    const int hit = hitTestBandNode(pos);
+
+    if (e.mods.isPopupMenu())
+    {
+        if (hit >= 0)
+            showContextMenuForBand(hit, e.getScreenPosition().toFloat());
+        else
+            showContextMenuForGraph(pos);
+        return;
+    }
+
+    if (hit >= 0)
+    {
+        selectBand(hit);
+        draggedBandIndex = hit;
+        updateBandParamFromGraph(hit, xToFreqHz(pos.x), yToGainDb(pos.y));
+    }
+}
+
+void HybridResonanceEQEditor::mouseDrag(const juce::MouseEvent& e)
+{
+    if (draggedBandIndex < 0)
+        return;
+
+    const auto pos = e.position;
+    updateBandParamFromGraph(draggedBandIndex, xToFreqHz(pos.x), yToGainDb(pos.y));
+}
+
+void HybridResonanceEQEditor::mouseUp(const juce::MouseEvent&)
+{
+    draggedBandIndex = -1;
+}
+
+void HybridResonanceEQEditor::mouseDoubleClick(const juce::MouseEvent& e)
+{
+    const auto pos = e.position;
+    if (!graphBounds.toFloat().contains(pos))
+        return;
+
+    const int hit = hitTestBandNode(pos);
+    if (hit >= 0)
+    {
+        selectBand(hit);
+        updateBandParamFromGraph(hit, xToFreqHz(pos.x), 0.0f);
+    }
+    else
+    {
+        addNewBandAt(xToFreqHz(pos.x), yToGainDb(pos.y));
+    }
+}
