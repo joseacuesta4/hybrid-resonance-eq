@@ -22,22 +22,28 @@ enum class AnalyzerSpeed : int
     Fast
 };
 
+struct SpectralBandWindow
+{
+    bool active = false;
+    float centerFreqHz = 1000.0f;
+    float q = 1.0f;
+};
+
 struct SpectralConfig
 {
-    bool enabled = true;
+    bool enabled = false; // Solo actúa cuando al menos una banda tiene spectralEnabled = true
     bool deltaListen = false;
 
-    float depth = 0.55f;
+    float depth = 0.45f;
     float sharpness = 0.65f;
     float smoothing = 0.55f;
     float mix = 1.0f;
 
-    float minFreqHz = 80.0f;
-    float maxFreqHz = 16000.0f;
-
     AnalyzerResolution resolution = AnalyzerResolution::High;
     AnalyzerSpeed speed = AnalyzerSpeed::Medium;
     float tiltDbPerOct = 4.5f;
+
+    std::array<SpectralBandWindow, 16> bandWindows {};
 };
 
 class SpectralResonanceEngine
@@ -63,7 +69,19 @@ public:
 
     int getLatencySamples() const noexcept
     {
-        return config.enabled ? fftSize : 0;
+        return hasAnyActiveBand() ? fftSize : 0;
+    }
+
+    bool hasAnyActiveBand() const noexcept
+    {
+        if (!config.enabled)
+            return false;
+        for (const auto& bw : config.bandWindows)
+        {
+            if (bw.active)
+                return true;
+        }
+        return false;
     }
 
     void setConfig(const SpectralConfig& cfg) noexcept
@@ -99,7 +117,8 @@ public:
         auto* leftPtr = buffer.getWritePointer(0);
         auto* rightPtr = buffer.getWritePointer(1);
 
-        const float wetMix = config.enabled ? juce::jlimit(0.0f, 1.0f, config.mix) : 0.0f;
+        const bool activeSpectral = hasAnyActiveBand();
+        const float wetMix = activeSpectral ? juce::jlimit(0.0f, 1.0f, config.mix) : 0.0f;
         const float dryMix = 1.0f - wetMix;
 
         for (int n = 0; n < numSamples; ++n)
@@ -107,15 +126,15 @@ public:
             const float inL = leftPtr[n];
             const float inR = rightPtr[n];
 
+            inputFifoL[static_cast<size_t>(fifoWritePos)] = inL;
+            inputFifoR[static_cast<size_t>(fifoWritePos)] = inR;
+            fifoWritePos = (fifoWritePos + 1) % fftSize;
+
             const float delayedL = delayLineL[static_cast<size_t>(delayWritePos)];
             const float delayedR = delayLineR[static_cast<size_t>(delayWritePos)];
             delayLineL[static_cast<size_t>(delayWritePos)] = inL;
             delayLineR[static_cast<size_t>(delayWritePos)] = inR;
             delayWritePos = (delayWritePos + 1) % fftSize;
-
-            inputFifoL[static_cast<size_t>(fifoWritePos)] = inL;
-            inputFifoR[static_cast<size_t>(fifoWritePos)] = inR;
-            fifoWritePos = (fifoWritePos + 1) % fftSize;
 
             const float procL = outputAccumL[static_cast<size_t>(outReadPos)];
             const float procR = outputAccumR[static_cast<size_t>(outReadPos)];
@@ -123,14 +142,12 @@ public:
             outputAccumR[static_cast<size_t>(outReadPos)] = 0.0f;
             outReadPos = (outReadPos + 1) % fftSize;
 
-            if (config.enabled)
+            if (activeSpectral)
             {
                 if (config.deltaListen)
                 {
-                    const float deltaL = delayedL - procL;
-                    const float deltaR = delayedR - procR;
-                    leftPtr[n] = dryMix * delayedL + wetMix * deltaL;
-                    rightPtr[n] = dryMix * delayedR + wetMix * deltaR;
+                    leftPtr[n] = dryMix * delayedL + wetMix * (delayedL - procL);
+                    rightPtr[n] = dryMix * delayedR + wetMix * (delayedR - procR);
                 }
                 else
                 {
@@ -143,12 +160,36 @@ public:
             if (samplesSinceHop >= hopSize)
             {
                 samplesSinceHop = 0;
-                processFrame();
+                processFrame(activeSpectral);
             }
         }
     }
 
 private:
+    float computeBandWeight(float freqHz) const noexcept
+    {
+        float maxWeight = 0.0f;
+        for (const auto& bw : config.bandWindows)
+        {
+            if (!bw.active)
+                continue;
+
+            const float f0 = juce::jlimit(20.0f, 20000.0f, bw.centerFreqHz);
+            const float qVal = juce::jlimit(0.2f, 16.0f, bw.q);
+            const float octDistance = std::abs(std::log2(juce::jmax(1.0f, freqHz) / f0));
+            const float bandwidthOct = juce::jlimit(0.12f, 2.5f, 1.15f / qVal);
+
+            const float normDist = octDistance / bandwidthOct;
+            if (normDist <= 2.2f)
+            {
+                const float w = std::exp(-1.35f * normDist * normDist);
+                if (w > maxWeight)
+                    maxWeight = w;
+            }
+        }
+        return juce::jlimit(0.0f, 1.0f, maxWeight);
+    }
+
     void clearBuffers() noexcept
     {
         inputFifoL.fill(0.0f);
@@ -177,14 +218,14 @@ private:
     {
         switch (config.speed)
         {
-            case AnalyzerSpeed::Slow:   return 0.91f;
-            case AnalyzerSpeed::Medium: return 0.78f;
-            case AnalyzerSpeed::Fast:   return 0.55f;
+            case AnalyzerSpeed::Slow:   return 0.90f;
+            case AnalyzerSpeed::Medium: return 0.76f;
+            case AnalyzerSpeed::Fast:   return 0.54f;
         }
-        return 0.78f;
+        return 0.76f;
     }
 
-    void processFrame() noexcept
+    void processFrame(bool activeSpectral) noexcept
     {
         for (int i = 0; i < fftSize; ++i)
         {
@@ -200,26 +241,19 @@ private:
         fft.performRealOnlyForwardTransform(fftWorkR.data(), true);
 
         const float binHzStep = static_cast<float>(sampleRate) / static_cast<float>(fftSize);
-        const float minHz = juce::jlimit(20.0f, 10000.0f, config.minFreqHz);
-        const float maxHz = juce::jlimit(minHz + 100.0f, static_cast<float>(sampleRate) * 0.49f, config.maxFreqHz);
 
         for (int b = 0; b < numBins; ++b)
         {
             const int reIdx = 2 * b;
             const int imIdx = 2 * b + 1;
-
-            const float mL = std::hypot(fftWorkL[static_cast<size_t>(reIdx)], fftWorkL[static_cast<size_t>(imIdx)]);
-            const float mR = std::hypot(fftWorkR[static_cast<size_t>(reIdx)], fftWorkR[static_cast<size_t>(imIdx)]);
-
-            magL[static_cast<size_t>(b)] = mL;
-            magR[static_cast<size_t>(b)] = mR;
+            magL[static_cast<size_t>(b)] = std::hypot(fftWorkL[static_cast<size_t>(reIdx)], fftWorkL[static_cast<size_t>(imIdx)]);
+            magR[static_cast<size_t>(b)] = std::hypot(fftWorkR[static_cast<size_t>(reIdx)], fftWorkR[static_cast<size_t>(imIdx)]);
         }
 
-        const int halfKernel = juce::jlimit(4, 40, static_cast<int>(std::round(36.0f * (1.0f - 0.72f * config.sharpness))));
+        const int halfKernel = juce::jlimit(4, 36, static_cast<int>(std::round(30.0f * (1.0f - 0.7f * config.sharpness))));
         const float smoothCoeff = juce::jlimit(0.05f, 0.96f, 0.25f + 0.68f * config.smoothing);
-        const float depthAmount = config.enabled ? juce::jlimit(0.0f, 1.0f, config.depth) : 0.0f;
-        const float wetMix = config.enabled ? juce::jlimit(0.0f, 1.0f, config.mix) : 0.0f;
-
+        const float depthAmount = activeSpectral ? juce::jlimit(0.0f, 1.0f, config.depth) : 0.0f;
+        const float wetMix = activeSpectral ? juce::jlimit(0.0f, 1.0f, config.mix) : 0.0f;
         const float dispSmooth = getDisplaySmoothingCoeff();
         const float tilt = config.tiltDbPerOct;
 
@@ -230,11 +264,12 @@ private:
             const float normMag = mCur / static_cast<float>(fftSize);
             const float instDb = juce::Decibels::gainToDecibels(normMag + 1.0e-8f);
 
+            const float bandWeight = activeSpectral ? computeBandWeight(freqHz) : 0.0f;
+
             float targetGain = 1.0f;
             float appliedReductionDb = 0.0f;
 
-            // Solo actúa sobre resonancias prominentes por encima del piso de ruido (-72 dB) y dentro del rango activo
-            if (config.enabled && freqHz >= minHz && freqHz <= maxHz && instDb > -72.0f)
+            if (activeSpectral && bandWeight > 0.02f && instDb > -68.0f)
             {
                 float sumLocal = 0.0f;
                 int countLocal = 0;
@@ -242,8 +277,7 @@ private:
                 const int endK = juce::jmin(numBins - 1, b + halfKernel);
                 for (int k = startK; k <= endK; ++k)
                 {
-                    const float mK = 0.5f * (magL[static_cast<size_t>(k)] + magR[static_cast<size_t>(k)]);
-                    sumLocal += mK;
+                    sumLocal += 0.5f * (magL[static_cast<size_t>(k)] + magR[static_cast<size_t>(k)]);
                     ++countLocal;
                 }
 
@@ -252,12 +286,12 @@ private:
                     smoothCoeff * smoothedEnv[static_cast<size_t>(b)] + (1.0f - smoothCoeff) * localMean;
 
                 const float ratio = mCur / juce::jmax(1.0e-6f, smoothedEnv[static_cast<size_t>(b)]);
-                const float thresholdRatio = 1.45f - 0.35f * config.sharpness;
+                const float thresholdRatio = 1.55f - 0.35f * config.sharpness;
                 const float excess = juce::jmax(0.0f, ratio - thresholdRatio);
 
-                if (excess > 0.02f)
+                if (excess > 0.03f)
                 {
-                    const float attenDb = -depthAmount * juce::jlimit(0.0f, 18.0f, excess * 8.5f);
+                    const float attenDb = -depthAmount * bandWeight * juce::jlimit(0.0f, 15.0f, excess * 7.5f);
                     targetGain = juce::Decibels::decibelsToGain(attenDb);
                 }
             }
@@ -267,11 +301,9 @@ private:
 
             const float effectiveGain = (1.0f - wetMix) + wetMix * binGains[static_cast<size_t>(b)];
             const float redDbRaw = juce::jlimit(-24.0f, 0.0f, juce::Decibels::gainToDecibels(effectiveGain + 1.0e-6f));
-            appliedReductionDb = (redDbRaw < -0.25f) ? redDbRaw : 0.0f;
+            appliedReductionDb = (redDbRaw < -0.35f) ? redDbRaw : 0.0f;
 
-            const float octavesFrom1k = std::log2(freqHz / 1000.0f);
-            const float tiltOffsetDb = tilt * octavesFrom1k;
-
+            const float tiltOffsetDb = tilt * std::log2(freqHz / 1000.0f);
             const float rawPreDb = instDb + tiltOffsetDb;
             const float rawPostDb = rawPreDb + appliedReductionDb;
 
