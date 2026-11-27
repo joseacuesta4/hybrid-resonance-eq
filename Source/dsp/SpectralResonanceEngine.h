@@ -31,7 +31,7 @@ struct SpectralBandWindow
 
 struct SpectralConfig
 {
-    bool enabled = false; // Solo actúa cuando al menos una banda tiene spectralEnabled = true
+    bool enabled = false;
     bool deltaListen = false;
 
     float depth = 0.45f;
@@ -166,6 +166,7 @@ public:
     }
 
 private:
+    // Ventana estricta alrededor del centro y Q de cada banda con Spec activo
     float computeBandWeight(float freqHz) const noexcept
     {
         float maxWeight = 0.0f;
@@ -175,19 +176,22 @@ private:
                 continue;
 
             const float f0 = juce::jlimit(20.0f, 20000.0f, bw.centerFreqHz);
-            const float qVal = juce::jlimit(0.2f, 16.0f, bw.q);
+            const float qVal = juce::jlimit(0.25f, 24.0f, bw.q);
             const float octDistance = std::abs(std::log2(juce::jmax(1.0f, freqHz) / f0));
-            const float bandwidthOct = juce::jlimit(0.12f, 2.5f, 1.15f / qVal);
 
-            const float normDist = octDistance / bandwidthOct;
-            if (normDist <= 2.2f)
+            // Ancho en octavas estrecho y fiel a la Q de la banda
+            const float halfBandwidthOct = juce::jlimit(0.05f, 0.85f, 0.55f / qVal);
+            const float normDist = octDistance / halfBandwidthOct;
+
+            // Corte limpio fuera de 1.35x del semiancho de banda
+            if (normDist <= 1.35f)
             {
-                const float w = std::exp(-1.35f * normDist * normDist);
+                const float w = std::exp(-2.8f * normDist * normDist);
                 if (w > maxWeight)
                     maxWeight = w;
             }
         }
-        return juce::jlimit(0.0f, 1.0f, maxWeight);
+        return (maxWeight > 0.03f) ? juce::jlimit(0.0f, 1.0f, maxWeight) : 0.0f;
     }
 
     void clearBuffers() noexcept
@@ -250,7 +254,7 @@ private:
             magR[static_cast<size_t>(b)] = std::hypot(fftWorkR[static_cast<size_t>(reIdx)], fftWorkR[static_cast<size_t>(imIdx)]);
         }
 
-        const int halfKernel = juce::jlimit(4, 36, static_cast<int>(std::round(30.0f * (1.0f - 0.7f * config.sharpness))));
+        const int halfKernel = juce::jlimit(2, 16, static_cast<int>(std::round(14.0f * (1.0f - 0.75f * config.sharpness))));
         const float smoothCoeff = juce::jlimit(0.05f, 0.96f, 0.25f + 0.68f * config.smoothing);
         const float depthAmount = activeSpectral ? juce::jlimit(0.0f, 1.0f, config.depth) : 0.0f;
         const float wetMix = activeSpectral ? juce::jlimit(0.0f, 1.0f, config.mix) : 0.0f;
@@ -269,7 +273,7 @@ private:
             float targetGain = 1.0f;
             float appliedReductionDb = 0.0f;
 
-            if (activeSpectral && bandWeight > 0.02f && instDb > -68.0f)
+            if (activeSpectral && bandWeight > 0.0f && instDb > -65.0f)
             {
                 float sumLocal = 0.0f;
                 int countLocal = 0;
@@ -286,10 +290,10 @@ private:
                     smoothCoeff * smoothedEnv[static_cast<size_t>(b)] + (1.0f - smoothCoeff) * localMean;
 
                 const float ratio = mCur / juce::jmax(1.0e-6f, smoothedEnv[static_cast<size_t>(b)]);
-                const float thresholdRatio = 1.55f - 0.35f * config.sharpness;
+                const float thresholdRatio = 1.65f - 0.35f * config.sharpness;
                 const float excess = juce::jmax(0.0f, ratio - thresholdRatio);
 
-                if (excess > 0.03f)
+                if (excess > 0.04f)
                 {
                     const float attenDb = -depthAmount * bandWeight * juce::jlimit(0.0f, 15.0f, excess * 7.5f);
                     targetGain = juce::Decibels::decibelsToGain(attenDb);
@@ -301,7 +305,7 @@ private:
 
             const float effectiveGain = (1.0f - wetMix) + wetMix * binGains[static_cast<size_t>(b)];
             const float redDbRaw = juce::jlimit(-24.0f, 0.0f, juce::Decibels::gainToDecibels(effectiveGain + 1.0e-6f));
-            appliedReductionDb = (redDbRaw < -0.35f) ? redDbRaw : 0.0f;
+            appliedReductionDb = (redDbRaw < -0.45f) ? redDbRaw : 0.0f;
 
             const float tiltOffsetDb = tilt * std::log2(freqHz / 1000.0f);
             const float rawPreDb = instDb + tiltOffsetDb;
