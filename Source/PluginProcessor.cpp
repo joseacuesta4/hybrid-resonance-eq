@@ -372,12 +372,16 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     if (numChannels <= 0 || numSamples <= 0)
         return;
 
-    if (dryScratch.getNumSamples() < numSamples)
-    {
-        dryScratch.setSize(2, numSamples, false, false, true);
-        bandScratch.setSize(2, numSamples, false, false, true);
-    }
-    dryScratch.makeCopyOf(buffer, true);
+    // Scratch buffers are allocated in prepareToPlay(). Never resize them
+    // from the audio thread. If a host supplies an unexpectedly large block,
+    // leave it untouched rather than allocating memory here.
+    if (numChannels != 2
+        || numSamples > dryScratch.getNumSamples()
+        || numSamples > bandScratch.getNumSamples())
+        return;
+
+    dryScratch.copyFrom(0, 0, buffer, 0, 0, numSamples);
+    dryScratch.copyFrom(1, 0, buffer, 1, 0, numSamples);
 
     const bool bypassed = apvts.getRawParameterValue("global_bypass")->load() > 0.5f;
     bypassMixSmooth.setTargetValue(bypassed ? 0.0f : 1.0f);
@@ -479,7 +483,8 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
             monitorParams.dynamicEnabled = false;
             monitorParams.route = dspcore::ChannelRoute::Stereo;
             soloMonitorFilter.setParameters(monitorParams);
-            buffer.makeCopyOf(dryScratch, true);
+            buffer.copyFrom(0, 0, dryScratch, 0, 0, numSamples);
+            buffer.copyFrom(1, 0, dryScratch, 1, 0, numSamples);
             soloMonitorFilter.processBlock(buffer.getWritePointer(0),
                                            buffer.getWritePointer(1), numSamples);
         }
@@ -494,7 +499,8 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
                 continue;
 
             const int charMode = static_cast<int>(apvts.getRawParameterValue(prefix + "character")->load());
-            bandScratch.makeCopyOf(buffer, true);
+            bandScratch.copyFrom(0, 0, buffer, 0, 0, numSamples);
+            bandScratch.copyFrom(1, 0, buffer, 1, 0, numSamples);
 
             for (int ch = 0; ch < numChannels; ++ch)
             {
@@ -507,7 +513,8 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
                     ptr[n] = applyBandCharacterSample(sample, charMode);
                 }
             }
-            buffer.makeCopyOf(bandScratch, true);
+            buffer.copyFrom(0, 0, bandScratch, 0, 0, numSamples);
+            buffer.copyFrom(1, 0, bandScratch, 1, 0, numSamples);
         }
     }
 
