@@ -57,7 +57,6 @@ juce::dsp::IIR::Coefficients<float>::Ptr makeCoefficientsForShape(dspcore::Filte
             return juce::dsp::IIR::Coefficients<float>::makeBandPass(sr, clampedFreq, clampedQ);
 
         case dspcore::FilterShape::TiltShelf:
-            // Aproximación musical de inclinación mediante shelf en frecuencia central
             return juce::dsp::IIR::Coefficients<float>::makeHighShelf(sr, clampedFreq, juce::jmax(0.35, clampedQ * 0.7), linearGain);
     }
 
@@ -91,7 +90,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout HybridResonanceEQProcessor::
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
-    // Controles globales / analizador
     params.push_back(std::make_unique<juce::AudioParameterChoice>(
         "ana_resolution", "Analyzer Resolution",
         juce::StringArray { "Low", "Medium", "High", "Maximum" }, 2));
@@ -126,7 +124,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout HybridResonanceEQProcessor::
         "output_gain", "Output Gain",
         juce::NormalisableRange<float>(-24.0f, 24.0f, 0.1f), 0.0f));
 
-    // Controles espectrales globales
     params.push_back(std::make_unique<juce::AudioParameterBool>("spec_delta", "Spectral Delta", false));
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         "spec_depth", "Spectral Depth",
@@ -141,7 +138,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout HybridResonanceEQProcessor::
         "spec_mix", "Spectral Mix",
         juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 1.0f));
 
-    // Parámetros por banda (1..16) — cada banda tiene su propia coloración ("character")
     for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
     {
         const juce::String prefix = "band_" + juce::String(i) + "_";
@@ -252,7 +248,6 @@ void HybridResonanceEQProcessor::prepareToPlay(double sampleRate, int samplesPer
         st.filterR.prepare(spec);
     }
 
-    // Rampa de 12 ms para evitar clics al cambiar Bypass
     bypassMixSmooth.reset(currentSampleRate, 0.012);
     outputGainSmooth.reset(currentSampleRate, 0.015);
 
@@ -275,18 +270,18 @@ bool HybridResonanceEQProcessor::isBusesLayoutSupported(const BusesLayout& layou
 
 float HybridResonanceEQProcessor::applyBandCharacterSample(float sample, int characterMode) const noexcept
 {
-    if (characterMode == 1) // Subtle
+    if (characterMode == 1)
     {
         const float drive = 1.25f;
         return std::tanh(sample * drive) / std::tanh(drive);
     }
-    if (characterMode == 2) // Warm
+    if (characterMode == 2)
     {
         const float drive = 2.1f;
         const float asym = sample + 0.06f * sample * sample;
         return std::tanh(asym * drive) / std::tanh(drive * 1.04f);
     }
-    return sample; // Clean
+    return sample;
 }
 
 void HybridResonanceEQProcessor::updateBandFilters(double sampleRate)
@@ -329,7 +324,6 @@ void HybridResonanceEQProcessor::processSpectralStage(juce::AudioBuffer<float>& 
     if (numSamples <= 0 || numChannels < 2)
         return;
 
-    // Si no hay ninguna banda con Spectral activo o depth/mix es cero, limpiar reducción y salir sin ganancia extra
     if (!anySpecEnabled || depth <= 0.0001f || mix <= 0.0001f)
     {
         for (int b = 0; b < numBins; ++b)
@@ -343,15 +337,13 @@ void HybridResonanceEQProcessor::processSpectralStage(juce::AudioBuffer<float>& 
     auto* leftPtr = buffer.getWritePointer(0);
     auto* rightPtr = buffer.getWritePointer(1);
 
-    // Acumulador de salida suavizada para evitar suma excesiva de ventanas
     std::vector<float> wetL(static_cast<size_t>(numSamples), 0.0f);
     std::vector<float> wetR(static_cast<size_t>(numSamples), 0.0f);
     std::copy(leftPtr, leftPtr + numSamples, wetL.begin());
     std::copy(rightPtr, rightPtr + numSamples, wetR.begin());
 
-    // Calcular ganancia de supresión por bin (siempre <= 0 dB en atenuación, sin boost accidental)
     const float binHz = static_cast<float>(currentSampleRate) / static_cast<float>(fftSize);
-    const float maxAttenDb = -2.0f - depth * 16.0f; // hasta -18 dB de reducción real en resonancias
+    const float maxAttenDb = -2.0f - depth * 16.0f;
 
     std::array<bool, numBins> activeBinMask {};
     activeBinMask.fill(false);
@@ -390,7 +382,6 @@ void HybridResonanceEQProcessor::processSpectralStage(juce::AudioBuffer<float>& 
             std::memmove(fifoL.data(), fifoL.data() + hopSize, static_cast<size_t>(fftSize - hopSize) * sizeof(float));
             std::memmove(fifoR.data(), fifoR.data() + hopSize, static_cast<size_t>(fftSize - hopSize) * sizeof(float));
 
-            // Análisis espectral mono-sumado normalizado
             std::fill(fftWorkspace.begin(), fftWorkspace.end(), 0.0f);
             for (int k = 0; k < fftSize; ++k)
             {
@@ -400,7 +391,6 @@ void HybridResonanceEQProcessor::processSpectralStage(juce::AudioBuffer<float>& 
             hannWindow.multiplyWithWindowingTable(fftWorkspace.data(), static_cast<size_t>(fftSize));
             forwardFFT.performFrequencyOnlyForwardTransform(fftWorkspace.data());
 
-            // Media espectral local para detectar picos resonantes por encima del piso tonal
             const int localRadius = juce::jlimit(2, 18, static_cast<int>(std::round(16.0f - sharpness * 12.0f)));
             const float envAlpha = juce::jlimit(0.05f, 0.85f, 0.65f - smoothing * 0.50f);
 
@@ -433,7 +423,6 @@ void HybridResonanceEQProcessor::processSpectralStage(juce::AudioBuffer<float>& 
                 binReductionDb[static_cast<size_t>(b)] = binEnvelope[static_cast<size_t>(b)];
             }
 
-            // Aplicar atenuación espectral suave sobre la señal de trabajo sin amplificar
             float avgAttenLinear = 1.0f;
             {
                 double sumLin = 0.0;
@@ -465,7 +454,6 @@ void HybridResonanceEQProcessor::processSpectralStage(juce::AudioBuffer<float>& 
 
     if (deltaMode)
     {
-        // Escucha de la diferencia removida (señal original menos señal suprimida)
         for (int ch = 0; ch < numChannels; ++ch)
         {
             auto* out = buffer.getWritePointer(ch);
@@ -497,7 +485,6 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     juce::AudioBuffer<float> dryBuffer;
     dryBuffer.makeCopyOf(buffer, true);
 
-    // Actualizar suavizadores
     const bool bypassed = apvts.getRawParameterValue("global_bypass")->load() > 0.5f;
     bypassMixSmooth.setTargetValue(bypassed ? 0.0f : 1.0f);
 
@@ -507,7 +494,6 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     const bool phaseInvert = apvts.getRawParameterValue("phase_invert")->load() > 0.5f;
     const float phaseSign = phaseInvert ? -1.0f : 1.0f;
 
-    // Detectar si alguna banda está en Solo
     bool anySoloActive = false;
     bool anySpecActive = false;
     for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
@@ -524,7 +510,6 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
             anySpecActive = true;
     }
 
-    // Calcular envolvente dinámica por banda y actualizar filtros (respetando Gain en Solo)
     const float gainScale = apvts.getRawParameterValue("gain_scale")->load();
     for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
     {
@@ -545,7 +530,6 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
         const float attackMs = juce::jmax(0.5f, apvts.getRawParameterValue(prefix + "dyn_attack")->load());
         const float releaseMs = juce::jmax(10.0f, apvts.getRawParameterValue(prefix + "dyn_release")->load());
 
-        // Medición RMS rápida del bloque
         float sumSq = 0.0f;
         for (int ch = 0; ch < numChannels; ++ch)
         {
@@ -568,7 +552,6 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
 
     updateBandFilters(currentSampleRate);
 
-    // Procesamiento por banda: cada banda aplica su filtro, su ganancia (también en Solo) y su carácter independiente
     juce::AudioBuffer<float> soloSumBuffer;
     soloSumBuffer.setSize(numChannels, numSamples);
     soloSumBuffer.clear();
@@ -603,7 +586,6 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
         {
             if (soloOn)
             {
-                // Mantener la ganancia explícita de la banda al escuchar en Solo
                 const auto shape = static_cast<dspcore::FilterShape>(
                     static_cast<int>(apvts.getRawParameterValue(prefix + "shape")->load()));
                 const float bandGainDb = dspcore::BandFilter::supportsGain(shape)
@@ -624,7 +606,6 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     if (anySoloActive)
         buffer.makeCopyOf(soloSumBuffer, true);
 
-    // Etapa espectral
     const float specDepth = apvts.getRawParameterValue("spec_depth")->load();
     const float specSharp = apvts.getRawParameterValue("spec_sharpness")->load();
     const float specSmooth = apvts.getRawParameterValue("spec_smoothing")->load();
@@ -633,7 +614,6 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
 
     processSpectralStage(buffer, anySpecActive, specDepth, specSharp, specSmooth, specMix, specDelta);
 
-    // Inversión de fase y ganancia de salida suavizada
     for (int ch = 0; ch < numChannels; ++ch)
     {
         auto* out = buffer.getWritePointer(ch);
@@ -644,7 +624,6 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
         }
     }
 
-    // Crossfade suave de Bypass para eliminar clics
     for (int n = 0; n < numSamples; ++n)
     {
         const float wetAmt = bypassMixSmooth.getNextValue();
@@ -767,10 +746,4 @@ void HybridResonanceEQProcessor::setStateInformation(const void* data, int sizeI
     std::unique_ptr<juce::XmlElement> xmlState(getXmlFromBinary(data, sizeInBytes));
     if (xmlState != nullptr && xmlState->hasTagName(apvts.state.getType()))
         apvts.replaceState(juce::ValueTree::fromXml(*xmlState));
-}
-
-juce::AudioProcessorValueTreeState::ParameterLayout HybridResonanceEQProcessor::createParameterLayout()
-{
-    // Definición principal implementada arriba; sobrecarga requerida si se invoca estáticamente sin instancia
-    return HybridResonanceEQProcessor::createParameterLayout();
 }
