@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <cstring>
 
 namespace
 {
@@ -566,7 +567,7 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
             for (int n = 0; n < numSamples; ++n)
                 sumSq += ptr[n] * ptr[n];
         }
-        const float rms = std::sqrt(sumSq / juce::jmax(1, numChannels * numSamples));
+        const float rms = std::sqrt(sumSq / static_cast<float>(juce::jmax(1, numChannels * numSamples)));
         const float inputDb = gainToDb(rms);
 
         const float coeffMs = (inputDb > st.envLevelDb) ? attackMs : releaseMs;
@@ -676,12 +677,10 @@ void HybridResonanceEQProcessor::updateSpectrumVisuals(const juce::AudioBuffer<f
     if (numSamples <= 0 || numChannels <= 0)
         return;
 
-    // Espectro principal más lento y orgánico; reducción más rápida y detallada
     const int speedIdx = static_cast<int>(apvts.getRawParameterValue("ana_speed")->load());
     const float mainAlpha = (speedIdx == 0) ? 0.035f : ((speedIdx == 1) ? 0.085f : 0.16f);
     const float redAlpha = 0.42f;
 
-    // Calcular energía por tercios/bandas para dar movimiento ondulatorio suave en el espectro general
     float preSq = 0.0f;
     float postSq = 0.0f;
     for (int ch = 0; ch < numChannels; ++ch)
@@ -703,7 +702,6 @@ void HybridResonanceEQProcessor::updateSpectrumVisuals(const juce::AudioBuffer<f
     {
         const size_t idx = static_cast<size_t>(b);
         const float normPos = static_cast<float>(b) / static_cast<float>(juce::jmax(1, numBins - 1));
-        // Ondulación suave a lo largo del espectro para el analizador principal
         const float waveShape = 3.5f * std::sin(normPos * 14.0f) + 1.8f * std::cos(normPos * 29.0f);
         const float targetPre = juce::jlimit(-100.0f, 6.0f, preBaseDb + waveShape);
         const float targetPost = juce::jlimit(-100.0f, 6.0f, postBaseDb + waveShape);
@@ -839,4 +837,9 @@ void HybridResonanceEQProcessor::setStateInformation(const void* data, int sizeI
     std::unique_ptr<juce::XmlElement> xmlState(getXmlFromBinary(data, sizeInBytes));
     if (xmlState != nullptr && xmlState->hasTagName(apvts.state.getType()))
         apvts.replaceState(juce::ValueTree::fromXml(*xmlState));
+}
+
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
+{
+    return new HybridResonanceEQProcessor();
 }
