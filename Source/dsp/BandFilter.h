@@ -35,6 +35,7 @@ struct BandParams
     bool solo = false;
     bool dynamicEnabled = false;
     bool autoThreshold = true;
+    bool spectralEnabled = false;
 
     FilterShape shape = FilterShape::Bell;
     ChannelRoute route = ChannelRoute::Stereo;
