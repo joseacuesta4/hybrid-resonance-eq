@@ -70,6 +70,8 @@ private:
     void copySelectedBand();
     void pasteToSelectedBand();
     void toggleABState();
+    void showContextMenuForBand(int bandIndex, juce::Point<float> screenPos);
+    void showContextMenuForGraph(juce::Point<float> graphPos);
 
     float xToFreqHz(float x) const noexcept;
     float freqHzToX(float freqHz) const noexcept;
@@ -112,7 +114,7 @@ private:
 
     juce::ToggleButton showPreToggle { "Pre" };
     juce::ToggleButton showPostToggle { "Post" };
-    juce::ToggleButton autoGainToggle { "AutoGain" };
+    juce::ToggleButton autoGainToggle { "Out Auto" };
     juce::ToggleButton phaseInvertToggle { "Ø" };
     juce::ToggleButton bypassToggle { "Bypass" };
 
