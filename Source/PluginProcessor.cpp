@@ -88,7 +88,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout HybridResonanceEQProcessor::
             juce::NormalisableRange<float>(10.0f, 600.0f, 1.0f, 0.4f), 120.0f));
     }
 
-    // Spectral Resonance Suppression (per-band windows + shared shaping)
     params.push_back(std::make_unique<juce::AudioParameterBool>("spec_delta", "Spectral Delta", false));
 
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
@@ -107,7 +106,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout HybridResonanceEQProcessor::
         "spec_mix", "Spectral Mix",
         juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 1.0f));
 
-    // Analyzer options
     params.push_back(std::make_unique<juce::AudioParameterChoice>(
         "ana_resolution", "Analyzer Resolution",
         juce::StringArray { "Low", "Medium", "High", "Max" }, 2));
@@ -130,13 +128,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout HybridResonanceEQProcessor::
         "display_range", "Display Range",
         juce::StringArray { "+/- 6 dB", "+/- 12 dB", "+/- 30 dB" }, 1));
 
-    // Character, AutoGain, Scale, Polarity, Output & Bypass
+    // Character y Auto Gain independientes
     params.push_back(std::make_unique<juce::AudioParameterChoice>(
         "character_mode", "Character",
         juce::StringArray { "Clean", "Subtle", "Warm" }, 0));
 
     params.push_back(std::make_unique<juce::AudioParameterBool>(
-        "auto_gain", "Auto Gain", false));
+        "out_auto_gain", "Out Auto Gain", false));
 
     params.push_back(std::make_unique<juce::AudioParameterFloat>(
         "gain_scale", "Gain Scale",
@@ -160,6 +158,7 @@ void HybridResonanceEQProcessor::prepareToPlay(double sampleRate, int samplesPer
     currentSampleRate = sampleRate;
     eqEngine.prepare(sampleRate, samplesPerBlock);
     spectralEngine.prepare(sampleRate, samplesPerBlock);
+    inputReferenceBuffer.setSize(2, juce::jmax(1, samplesPerBlock), false, false, true);
     autoGainSmoothDb = 0.0f;
     syncParametersToDSP();
     setLatencySamples(spectralEngine.getLatencySamples());
@@ -223,32 +222,65 @@ void HybridResonanceEQProcessor::syncParametersToDSP()
     spectralEngine.setConfig(sc);
 }
 
-void HybridResonanceEQProcessor::applyCharacterAndOutput(juce::AudioBuffer<float>& buffer,
+void HybridResonanceEQProcessor::applyCharacterAndOutput(const juce::AudioBuffer<float>& inputRef,
+                                                       juce::AudioBuffer<float>& outputBuffer,
                                                        CharacterMode mode,
                                                        float outGainDb,
                                                        bool phaseInvert,
                                                        bool autoGainEnabled) noexcept
 {
-    const int numSamples = buffer.getNumSamples();
-    const int numChannels = buffer.getNumChannels();
+    const int numSamples = outputBuffer.getNumSamples();
+    const int numChannels = outputBuffer.getNumChannels();
     if (numSamples <= 0 || numChannels < 2)
         return;
 
-    float compDb = 0.0f;
-    if (autoGainEnabled)
+    float drive = 1.0f;
+    if (mode == CharacterMode::Subtle)
+        drive = 1.25f;
+    else if (mode == CharacterMode::Warm)
+        drive = 1.85f;
+
+    if (mode != CharacterMode::Clean)
     {
-        float rmsSq = 0.0f;
+        const float norm = 1.0f / std::tanh(drive);
         for (int ch = 0; ch < numChannels; ++ch)
         {
-            const auto* r = buffer.getReadPointer(ch);
+            auto* data = outputBuffer.getWritePointer(ch);
             for (int i = 0; i < numSamples; ++i)
-                rmsSq += r[i] * r[i];
+                data[i] = std::tanh(data[i] * drive) * norm;
         }
-        const float rms = std::sqrt(rmsSq / static_cast<float>(numSamples * numChannels));
-        const float rmsDb = juce::Decibels::gainToDecibels(rms + 1.0e-7f);
-        const float targetDb = -18.0f;
-        const float rawComp = (rmsDb > -50.0f) ? juce::jlimit(-12.0f, 12.0f, (targetDb - rmsDb) * 0.35f) : 0.0f;
-        autoGainSmoothDb = 0.90f * autoGainSmoothDb + 0.10f * rawComp;
+    }
+
+    float compDb = 0.0f;
+    if (autoGainEnabled && inputRef.getNumChannels() >= 2 && inputRef.getNumSamples() >= numSamples)
+    {
+        double inSq = 0.0;
+        double outSq = 0.0;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const auto* inPtr = inputRef.getReadPointer(ch);
+            const auto* outPtr = outputBuffer.getReadPointer(ch);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                inSq += static_cast<double>(inPtr[i]) * static_cast<double>(inPtr[i]);
+                outSq += static_cast<double>(outPtr[i]) * static_cast<double>(outPtr[i]);
+            }
+        }
+
+        const double inRms = std::sqrt(inSq / static_cast<double>(numSamples * 2));
+        const double outRms = std::sqrt(outSq / static_cast<double>(numSamples * 2));
+
+        if (inRms > 1.0e-5 && outRms > 1.0e-5)
+        {
+            const float inDb = juce::Decibels::gainToDecibels(static_cast<float>(inRms));
+            const float outDb = juce::Decibels::gainToDecibels(static_cast<float>(outRms));
+            const float targetCompDb = juce::jlimit(-18.0f, 18.0f, inDb - outDb);
+            autoGainSmoothDb = 0.88f * autoGainSmoothDb + 0.12f * targetCompDb;
+        }
+        else
+        {
+            autoGainSmoothDb = 0.94f * autoGainSmoothDb;
+        }
         compDb = autoGainSmoothDb;
     }
     else
@@ -259,26 +291,11 @@ void HybridResonanceEQProcessor::applyCharacterAndOutput(juce::AudioBuffer<float
     const float polarity = phaseInvert ? -1.0f : 1.0f;
     const float gainLinear = juce::Decibels::decibelsToGain(outGainDb + compDb) * polarity;
 
-    float drive = 1.0f;
-    if (mode == CharacterMode::Subtle)
-        drive = 1.25f;
-    else if (mode == CharacterMode::Warm)
-        drive = 1.85f;
-
     for (int ch = 0; ch < numChannels; ++ch)
     {
-        auto* data = buffer.getWritePointer(ch);
-        if (mode == CharacterMode::Clean)
-        {
-            for (int i = 0; i < numSamples; ++i)
-                data[i] *= gainLinear;
-        }
-        else
-        {
-            const float norm = 1.0f / std::tanh(drive);
-            for (int i = 0; i < numSamples; ++i)
-                data[i] = std::tanh(data[i] * drive) * norm * gainLinear;
-        }
+        auto* data = outputBuffer.getWritePointer(ch);
+        for (int i = 0; i < numSamples; ++i)
+            data[i] *= gainLinear;
     }
 }
 
@@ -293,6 +310,13 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     if (bypassed)
         return;
 
+    const int numSamples = buffer.getNumSamples();
+    if (inputReferenceBuffer.getNumChannels() < 2 || inputReferenceBuffer.getNumSamples() < numSamples)
+        inputReferenceBuffer.setSize(2, juce::jmax(1, numSamples), false, false, true);
+
+    inputReferenceBuffer.copyFrom(0, 0, buffer, 0, 0, numSamples);
+    inputReferenceBuffer.copyFrom(1, 0, buffer, 1, 0, numSamples);
+
     const float scale = apvts.getRawParameterValue("gain_scale")->load();
     eqEngine.processBlock(buffer, scale);
     spectralEngine.processBlock(buffer);
@@ -300,9 +324,9 @@ void HybridResonanceEQProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     const auto mode = static_cast<CharacterMode>(static_cast<int>(apvts.getRawParameterValue("character_mode")->load()));
     const float outGainDb = apvts.getRawParameterValue("output_gain")->load();
     const bool phaseInv = apvts.getRawParameterValue("phase_invert")->load() > 0.5f;
-    const bool autoGain = apvts.getRawParameterValue("auto_gain")->load() > 0.5f;
+    const bool outAutoGain = apvts.getRawParameterValue("out_auto_gain")->load() > 0.5f;
 
-    applyCharacterAndOutput(buffer, mode, outGainDb, phaseInv, autoGain);
+    applyCharacterAndOutput(inputReferenceBuffer, buffer, mode, outGainDb, phaseInv, outAutoGain);
 }
 
 juce::AudioProcessorEditor* HybridResonanceEQProcessor::createEditor()
