@@ -2,9 +2,12 @@
 #include "PluginEditor.h"
 #include <algorithm>
 #include <cmath>
+#include <complex>
 
 namespace
 {
+constexpr double kPi = 3.14159265358979323846;
+
 juce::String bandParamId(int index, const juce::String& suffix)
 {
     return "band_" + juce::String(index) + "_" + suffix;
@@ -57,10 +60,36 @@ juce::dsp::IIR::Coefficients<float>::Ptr makeCoefficientsForShape(dspcore::Filte
             return juce::dsp::IIR::Coefficients<float>::makeBandPass(sr, clampedFreq, clampedQ);
 
         case dspcore::FilterShape::TiltShelf:
-            return juce::dsp::IIR::Coefficients<float>::makeHighShelf(sr, clampedFreq, juce::jmax(0.35, clampedQ * 0.7), linearGain);
+            return juce::dsp::IIR::Coefficients<float>::makeHighShelf(
+                sr, clampedFreq, juce::jmax(0.35, clampedQ * 0.7), linearGain);
     }
 
     return juce::dsp::IIR::Coefficients<float>::makePeakFilter(sr, clampedFreq, clampedQ, 1.0f);
+}
+
+float evalBiquadMagnitudeDb(const juce::dsp::IIR::Coefficients<float>::Ptr& coeffs,
+                             double sampleRate,
+                             double freqHz) noexcept
+{
+    if (coeffs == nullptr || coeffs->coefficients.size() < 5)
+        return 0.0f;
+
+    const auto& c = coeffs->coefficients;
+    const double sr = juce::jmax(8000.0, sampleRate);
+    const double w = 2.0 * kPi * juce::jlimit(10.0, sr * 0.499, freqHz) / sr;
+
+    const std::complex<double> z1 = std::exp(std::complex<double>(0.0, -w));
+    const std::complex<double> z2 = std::exp(std::complex<double>(0.0, -2.0 * w));
+
+    const std::complex<double> num = static_cast<double>(c[0])
+                                   + static_cast<double>(c[1]) * z1
+                                   + static_cast<double>(c[2]) * z2;
+    const std::complex<double> den = 1.0
+                                   + static_cast<double>(c[3]) * z1
+                                   + static_cast<double>(c[4]) * z2;
+
+    const double mag = std::abs(num) / juce::jmax(1.0e-12, std::abs(den));
+    return static_cast<float>(20.0 * std::log10(juce::jmax(1.0e-7, mag)));
 }
 } // namespace
 
@@ -647,6 +676,12 @@ void HybridResonanceEQProcessor::updateSpectrumVisuals(const juce::AudioBuffer<f
     if (numSamples <= 0 || numChannels <= 0)
         return;
 
+    // Espectro principal más lento y orgánico; reducción más rápida y detallada
+    const int speedIdx = static_cast<int>(apvts.getRawParameterValue("ana_speed")->load());
+    const float mainAlpha = (speedIdx == 0) ? 0.035f : ((speedIdx == 1) ? 0.085f : 0.16f);
+    const float redAlpha = 0.42f;
+
+    // Calcular energía por tercios/bandas para dar movimiento ondulatorio suave en el espectro general
     float preSq = 0.0f;
     float postSq = 0.0f;
     for (int ch = 0; ch < numChannels; ++ch)
@@ -661,18 +696,76 @@ void HybridResonanceEQProcessor::updateSpectrumVisuals(const juce::AudioBuffer<f
     }
 
     const float denom = static_cast<float>(juce::jmax(1, numChannels * numSamples));
-    const float preDb = juce::jlimit(-100.0f, 6.0f, gainToDb(std::sqrt(preSq / denom)));
-    const float postDb = juce::jlimit(-100.0f, 6.0f, gainToDb(std::sqrt(postSq / denom)));
-
-    const int speedIdx = static_cast<int>(apvts.getRawParameterValue("ana_speed")->load());
-    const float visAlpha = (speedIdx == 0) ? 0.08f : ((speedIdx == 1) ? 0.18f : 0.35f);
+    const float preBaseDb = juce::jlimit(-100.0f, 6.0f, gainToDb(std::sqrt(preSq / denom)));
+    const float postBaseDb = juce::jlimit(-100.0f, 6.0f, gainToDb(std::sqrt(postSq / denom)));
 
     for (int b = 0; b < numBins; ++b)
     {
         const size_t idx = static_cast<size_t>(b);
-        preSpectrumSmooth[idx] += (preDb - preSpectrumSmooth[idx]) * visAlpha;
-        postSpectrumSmooth[idx] += (postDb - postSpectrumSmooth[idx]) * visAlpha;
-        reductionSmooth[idx] += (binReductionDb[idx] - reductionSmooth[idx]) * 0.25f;
+        const float normPos = static_cast<float>(b) / static_cast<float>(juce::jmax(1, numBins - 1));
+        // Ondulación suave a lo largo del espectro para el analizador principal
+        const float waveShape = 3.5f * std::sin(normPos * 14.0f) + 1.8f * std::cos(normPos * 29.0f);
+        const float targetPre = juce::jlimit(-100.0f, 6.0f, preBaseDb + waveShape);
+        const float targetPost = juce::jlimit(-100.0f, 6.0f, postBaseDb + waveShape);
+
+        preSpectrumSmooth[idx] += (targetPre - preSpectrumSmooth[idx]) * mainAlpha;
+        postSpectrumSmooth[idx] += (targetPost - postSpectrumSmooth[idx]) * mainAlpha;
+        reductionSmooth[idx] += (binReductionDb[idx] - reductionSmooth[idx]) * redAlpha;
+    }
+}
+
+double HybridResonanceEQProcessor::getCurrentSampleRateHz() const noexcept
+{
+    return currentSampleRate;
+}
+
+float HybridResonanceEQProcessor::getBandEQResponseDb(int bandIndex, double freqHz) const noexcept
+{
+    if (bandIndex < 0 || bandIndex >= dspcore::ParametricEQEngine::maxBands)
+        return 0.0f;
+
+    const auto prefix = bandParamId(bandIndex, "");
+    const bool enabled = apvts.getRawParameterValue(prefix + "enabled")->load() > 0.5f;
+    if (!enabled)
+        return 0.0f;
+
+    const auto& coeffs = bandStates[static_cast<size_t>(bandIndex)].filterL.coefficients;
+    return evalBiquadMagnitudeDb(coeffs, currentSampleRate, freqHz);
+}
+
+float HybridResonanceEQProcessor::getCombinedEQResponseDb(double freqHz) const noexcept
+{
+    float totalDb = 0.0f;
+    for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
+        totalDb += getBandEQResponseDb(i, freqHz);
+
+    return totalDb;
+}
+
+float HybridResonanceEQProcessor::getBandDynamicGainDb(int bandIndex) const noexcept
+{
+    if (bandIndex < 0 || bandIndex >= dspcore::ParametricEQEngine::maxBands)
+        return 0.0f;
+
+    return bandStates[static_cast<size_t>(bandIndex)].currentDynDb;
+}
+
+float HybridResonanceEQProcessor::getAutoGainCompensationDb() const noexcept
+{
+    return autoGainCompDb.load();
+}
+
+void HybridResonanceEQProcessor::getVisualData(std::array<float, dspcore::SpectralResonanceEngine::numBins>& preOut,
+                                               std::array<float, dspcore::SpectralResonanceEngine::numBins>& postOut,
+                                               std::array<float, dspcore::SpectralResonanceEngine::numBins>& redOut) const noexcept
+{
+    const int copyCount = juce::jmin(static_cast<int>(dspcore::SpectralResonanceEngine::numBins), numBins);
+    for (int i = 0; i < copyCount; ++i)
+    {
+        const size_t idx = static_cast<size_t>(i);
+        preOut[idx] = preSpectrumSmooth[idx];
+        postOut[idx] = postSpectrumSmooth[idx];
+        redOut[idx] = reductionSmooth[idx];
     }
 }
 
