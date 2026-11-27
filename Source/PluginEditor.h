@@ -49,6 +49,7 @@ private:
         bool solo = false;
         bool dynamicEnabled = false;
         bool autoThreshold = true;
+        bool spectralEnabled = false;
         int shape = 0;
         int route = 0;
         float freq = 1000.0f;
@@ -111,6 +112,7 @@ private:
 
     juce::ToggleButton showPreToggle { "Pre" };
     juce::ToggleButton showPostToggle { "Post" };
+    juce::ToggleButton autoGainToggle { "AutoGain" };
     juce::ToggleButton phaseInvertToggle { "Ø" };
     juce::ToggleButton bypassToggle { "Bypass" };
 
@@ -126,6 +128,7 @@ private:
     juce::ComboBox bandRouteBox;
     juce::ToggleButton bandDynToggle { "Dyn" };
     juce::ToggleButton bandAutoThreshToggle { "Auto" };
+    juce::ToggleButton bandSpecToggle { "Spec" };
     juce::ToggleButton bandSoloToggle { "Solo" };
 
     juce::Slider bandFreqSlider;
@@ -147,22 +150,17 @@ private:
     juce::Label bandDynReleaseLabel;
 
     // Spectral Resonance controls
-    juce::ToggleButton specEnabledToggle { "Spectral" };
     juce::ToggleButton specDeltaToggle { "Delta" };
 
     juce::Slider specDepthSlider;
     juce::Slider specSharpSlider;
     juce::Slider specSmoothSlider;
     juce::Slider specMixSlider;
-    juce::Slider specMinFreqSlider;
-    juce::Slider specMaxFreqSlider;
 
     juce::Label specDepthLabel;
     juce::Label specSharpLabel;
     juce::Label specSmoothLabel;
     juce::Label specMixLabel;
-    juce::Label specMinFreqLabel;
-    juce::Label specMaxFreqLabel;
 
     // Attachments
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> resolutionAttach;
@@ -173,25 +171,24 @@ private:
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> showPreAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> showPostAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> autoGainAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> phaseInvertAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> gainScaleAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> outputGainAttach;
 
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> specEnabledAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> specDeltaAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> specDepthAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> specSharpAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> specSmoothAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> specMixAttach;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> specMinFreqAttach;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> specMaxFreqAttach;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bandEnabledAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> bandShapeAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> bandRouteAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bandDynAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bandAutoThreshAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bandSpecAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bandSoloAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandFreqAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> bandGainAttach;
