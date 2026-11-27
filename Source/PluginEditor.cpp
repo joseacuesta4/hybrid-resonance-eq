@@ -750,3 +750,342 @@ void HybridResonanceEQEditor::mouseDoubleClick(const juce::MouseEvent& e)
         addNewBandAt(xToFreqHz(pos.x), yToGainDb(pos.y));
     }
 }
+
+void HybridResonanceEQEditor::timerCallback()
+{
+    audioProcessor.getVisualData(preSpectrumDb, postSpectrumDb, reductionDb);
+    updateContextualBandControls();
+    repaint();
+}
+
+void HybridResonanceEQEditor::paint(juce::Graphics& g)
+{
+    g.fillAll(juce::Colour(0xff101216));
+
+    g.setColour(juce::Colour(0xff151820));
+    g.fillRect(topBarBounds);
+    g.fillRect(bottomBarBounds);
+
+    g.setColour(juce::Colour(0xff13161d));
+    g.fillRect(bandBarBounds);
+
+    g.setColour(juce::Colour(0xff252b36));
+    g.drawLine(0.0f, static_cast<float>(topBarBounds.getBottom()), static_cast<float>(getWidth()), static_cast<float>(topBarBounds.getBottom()), 1.0f);
+    g.drawLine(0.0f, static_cast<float>(bandBarBounds.getY()), static_cast<float>(getWidth()), static_cast<float>(bandBarBounds.getY()), 1.0f);
+    g.drawLine(0.0f, static_cast<float>(bottomBarBounds.getY()), static_cast<float>(getWidth()), static_cast<float>(bottomBarBounds.getY()), 1.0f);
+
+    g.setColour(juce::Colour(0xffedf2fa));
+    g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+    g.drawText("PRO RESONANCE EQ", 14, topBarBounds.getY(), 170, topBarBounds.getHeight(), juce::Justification::centredLeft);
+
+    const auto gb = graphBounds.toFloat();
+    g.setColour(juce::Colour(0xff0b0d11));
+    g.fillRect(gb);
+
+    const std::array<float, 10> gridFreqs { 20.0f, 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f };
+    g.setFont(juce::FontOptions(10.0f));
+    for (float f : gridFreqs)
+    {
+        const float x = freqHzToX(f);
+        g.setColour(juce::Colour(0xff181d26));
+        g.drawVerticalLine(static_cast<int>(std::round(x)), gb.getY(), gb.getBottom());
+
+        juce::String label = (f >= 1000.0f) ? (juce::String(f / 1000.0f, (f == 1000.0f || f == 2000.0f || f == 5000.0f || f == 10000.0f || f == 20000.0f) ? 0 : 1) + "k")
+                                          : juce::String(static_cast<int>(f));
+        g.setColour(juce::Colour(0xff788396));
+        g.drawText(label, static_cast<int>(x) - 18, static_cast<int>(gb.getBottom()) - 18, 36, 16, juce::Justification::centred);
+    }
+
+    const float rangeDb = getRangeDb();
+    const float stepDb = (rangeDb <= 6.0f) ? 2.0f : (rangeDb <= 12.0f ? 6.0f : 10.0f);
+    for (float db = -rangeDb; db <= rangeDb + 0.001f; db += stepDb)
+    {
+        const float y = gainDbToY(db);
+        const bool isZero = std::abs(db) < 0.01f;
+        g.setColour(isZero ? juce::Colour(0x88ffd23f) : juce::Colour(0xff161a22));
+        g.drawHorizontalLine(static_cast<int>(std::round(y)), gb.getX(), gb.getRight());
+
+        if (!isZero)
+        {
+            g.setColour(juce::Colour(0xff6b7588));
+            const juce::String txt = (db > 0.0f ? "+" : "") + juce::String(static_cast<int>(db));
+            g.drawText(txt, static_cast<int>(gb.getRight()) - 38, static_cast<int>(y) - 8, 34, 16, juce::Justification::right);
+        }
+    }
+
+    const bool showPre = audioProcessor.apvts.getRawParameterValue("ana_show_pre")->load() > 0.5f;
+    const bool showPost = audioProcessor.apvts.getRawParameterValue("ana_show_post")->load() > 0.5f;
+    const double sr = audioProcessor.getCurrentSampleRateHz();
+    const int numBins = dspcore::SpectralResonanceEngine::numBins;
+    const float binHzStep = static_cast<float>(sr) / static_cast<float>(dspcore::SpectralResonanceEngine::fftSize);
+
+    auto mapSpectrumDbToY = [this, &gb](float db) noexcept -> float
+    {
+        const float norm = juce::jlimit(0.0f, 1.0f, (db - (-85.0f)) / 91.0f);
+        return gb.getBottom() - norm * gb.getHeight();
+    };
+
+    juce::Path prePath, postPath, postFill;
+    bool started = false;
+    const float zeroY = gainDbToY(0.0f);
+
+    for (float px = gb.getX(); px <= gb.getRight(); px += 2.0f)
+    {
+        const float freq = xToFreqHz(px);
+        const int bin = juce::jlimit(0, numBins - 1, static_cast<int>(std::round(freq / juce::jmax(1.0f, binHzStep))));
+
+        const float preY = mapSpectrumDbToY(preSpectrumDb[static_cast<size_t>(bin)]);
+        const float postY = mapSpectrumDbToY(postSpectrumDb[static_cast<size_t>(bin)]);
+
+        if (!started)
+        {
+            prePath.startNewSubPath(px, preY);
+            postPath.startNewSubPath(px, postY);
+            postFill.startNewSubPath(px, gb.getBottom());
+            postFill.lineTo(px, postY);
+            started = true;
+        }
+        else
+        {
+            prePath.lineTo(px, preY);
+            postPath.lineTo(px, postY);
+            postFill.lineTo(px, postY);
+        }
+
+        const float redDb = reductionDb[static_cast<size_t>(bin)];
+        if (redDb < -0.45f)
+        {
+            const float intensity = juce::jlimit(0.0f, 1.0f, (-redDb) / 14.0f);
+            const float barH = intensity * (gb.getHeight() * 0.34f);
+            g.setColour(juce::Colour(0xffff5252).withAlpha(0.14f + 0.34f * intensity));
+            g.fillRect(px - 1.0f, zeroY, 2.0f, barH);
+        }
+    }
+
+    if (started)
+    {
+        postFill.lineTo(gb.getRight(), gb.getBottom());
+        postFill.closeSubPath();
+
+        if (showPost)
+        {
+            g.setColour(juce::Colour(0x224da3ff));
+            g.fillPath(postFill);
+
+            g.setColour(juce::Colour(0x8864b5ff));
+            g.strokePath(postPath, juce::PathStrokeType(1.35f));
+        }
+
+        if (showPre)
+        {
+            g.setColour(juce::Colour(0x489aa7bd));
+            g.strokePath(prePath, juce::PathStrokeType(1.05f));
+        }
+    }
+
+    {
+        juce::Path selCurve;
+        bool selStarted = false;
+        for (float px = gb.getX(); px <= gb.getRight(); px += 2.0f)
+        {
+            const float db = audioProcessor.getBandEQResponseDb(selectedBandIndex, static_cast<double>(xToFreqHz(px)));
+            const float y = gainDbToY(db);
+            if (!selStarted) { selCurve.startNewSubPath(px, y); selStarted = true; }
+            else selCurve.lineTo(px, y);
+        }
+        if (selStarted)
+        {
+            g.setColour(getBandColour(selectedBandIndex).withAlpha(0.55f));
+            g.strokePath(selCurve, juce::PathStrokeType(1.45f));
+        }
+    }
+
+    {
+        juce::Path sumCurve;
+        juce::Path sumFill;
+        bool sumStarted = false;
+
+        for (float px = gb.getX(); px <= gb.getRight(); px += 2.0f)
+        {
+            const float db = audioProcessor.getCombinedEQResponseDb(static_cast<double>(xToFreqHz(px)));
+            const float y = gainDbToY(db);
+            if (!sumStarted)
+            {
+                sumCurve.startNewSubPath(px, y);
+                sumFill.startNewSubPath(px, zeroY);
+                sumFill.lineTo(px, y);
+                sumStarted = true;
+            }
+            else
+            {
+                sumCurve.lineTo(px, y);
+                sumFill.lineTo(px, y);
+            }
+        }
+        if (sumStarted)
+        {
+            sumFill.lineTo(gb.getRight(), zeroY);
+            sumFill.closeSubPath();
+
+            g.setColour(juce::Colour(0x18ffd23f));
+            g.fillPath(sumFill);
+
+            g.setColour(juce::Colour(0xffffd23f));
+            g.strokePath(sumCurve, juce::PathStrokeType(2.15f));
+        }
+    }
+
+    for (int i = 0; i < dspcore::ParametricEQEngine::maxBands; ++i)
+    {
+        const bool enabled = audioProcessor.apvts.getRawParameterValue(bandParam(i, "enabled"))->load() > 0.5f;
+        if (!enabled)
+            continue;
+
+        const float freq = audioProcessor.apvts.getRawParameterValue(bandParam(i, "freq"))->load();
+        const float gain = audioProcessor.apvts.getRawParameterValue(bandParam(i, "gain"))->load();
+        const float dynDb = audioProcessor.getBandDynamicGainDb(i);
+
+        const float nx = freqHzToX(freq);
+        const float ny = gainDbToY(gain);
+        const auto col = getBandColour(i);
+        const bool isSelected = (i == selectedBandIndex);
+
+        const float r = isSelected ? 10.5f : 8.0f;
+
+        if (std::abs(dynDb) > 0.25f)
+        {
+            const float dynRadius = r + juce::jlimit(2.0f, 12.0f, std::abs(dynDb) * 0.8f);
+            g.setColour(juce::Colour(0xffff5252).withAlpha(0.55f));
+            g.drawEllipse(nx - dynRadius, ny - dynRadius, dynRadius * 2.0f, dynRadius * 2.0f, 1.8f);
+        }
+
+        g.setColour(col.withAlpha(isSelected ? 0.35f : 0.16f));
+        g.fillEllipse(nx - r * 1.4f, ny - r * 1.4f, r * 2.8f, r * 2.8f);
+
+        g.setColour(col);
+        g.fillEllipse(nx - r, ny - r, r * 2.0f, r * 2.0f);
+
+        g.setColour(juce::Colour(0xff101216));
+        g.drawEllipse(nx - r, ny - r, r * 2.0f, r * 2.0f, 1.4f);
+
+        g.setFont(juce::FontOptions(9.5f, juce::Font::bold));
+        g.drawText(juce::String(i + 1), static_cast<int>(nx) - 10, static_cast<int>(ny) - 8, 20, 16, juce::Justification::centred);
+    }
+
+    if (audioProcessor.apvts.getRawParameterValue("out_auto_gain")->load() > 0.5f)
+    {
+        const float comp = audioProcessor.getAutoGainCompensationDb();
+        const juce::String compStr = (comp >= 0.0f ? "+" : "") + juce::String(comp, 1) + " dB";
+        g.setColour(juce::Colour(0xff64b5ff));
+        g.setFont(juce::FontOptions(10.5f, juce::Font::bold));
+        g.drawText("Auto: " + compStr, static_cast<int>(gb.getRight()) - 110, static_cast<int>(gb.getY()) + 6, 104, 16, juce::Justification::right);
+    }
+}
+
+void HybridResonanceEQEditor::resized()
+{
+    auto area = getLocalBounds();
+
+    topBarBounds = area.removeFromTop(40);
+    bottomBarBounds = area.removeFromBottom(98);
+    bandBarBounds = area.removeFromBottom(90);
+    graphBounds = area;
+
+    {
+        auto r = topBarBounds.reduced(8, 6);
+        r.removeFromLeft(175);
+
+        bandSelectorBox.setBounds(r.removeFromLeft(84));
+        r.removeFromLeft(3);
+        addBandButton.setBounds(r.removeFromLeft(54));
+        r.removeFromLeft(3);
+        delBandButton.setBounds(r.removeFromLeft(36));
+        r.removeFromLeft(5);
+        copyBandButton.setBounds(r.removeFromLeft(44));
+        r.removeFromLeft(3);
+        pasteBandButton.setBounds(r.removeFromLeft(46));
+        r.removeFromLeft(3);
+        abButton.setBounds(r.removeFromLeft(30));
+        r.removeFromLeft(6);
+
+        resolutionBox.setBounds(r.removeFromLeft(80));
+        r.removeFromLeft(3);
+        speedBox.setBounds(r.removeFromLeft(78));
+        r.removeFromLeft(3);
+        tiltBox.setBounds(r.removeFromLeft(80));
+        r.removeFromLeft(3);
+        rangeBox.setBounds(r.removeFromLeft(74));
+        r.removeFromLeft(3);
+        characterBox.setBounds(r.removeFromLeft(90));
+        r.removeFromLeft(5);
+
+        showPreToggle.setBounds(r.removeFromLeft(38));
+        r.removeFromLeft(3);
+        showPostToggle.setBounds(r.removeFromLeft(42));
+        r.removeFromLeft(3);
+        autoGainToggle.setBounds(r.removeFromLeft(68));
+        r.removeFromLeft(3);
+        phaseInvertToggle.setBounds(r.removeFromLeft(28));
+        r.removeFromLeft(5);
+        bypassToggle.setBounds(r.removeFromLeft(54));
+    }
+
+    {
+        auto r = bandBarBounds.reduced(8, 4);
+        auto leftCol = r.removeFromLeft(290);
+        auto topBtns = leftCol.removeFromTop(28);
+        bandEnabledToggle.setBounds(topBtns.removeFromLeft(42));
+        topBtns.removeFromLeft(4);
+        bandShapeBox.setBounds(topBtns.removeFromLeft(94));
+        topBtns.removeFromLeft(4);
+        bandRouteBox.setBounds(topBtns.removeFromLeft(78));
+
+        auto botBtns = leftCol.removeFromTop(28).translated(0, 4);
+        bandDynToggle.setBounds(botBtns.removeFromLeft(48));
+        botBtns.removeFromLeft(4);
+        bandAutoThreshToggle.setBounds(botBtns.removeFromLeft(48));
+        botBtns.removeFromLeft(4);
+        bandSpecToggle.setBounds(botBtns.removeFromLeft(50));
+        botBtns.removeFromLeft(4);
+        bandSoloToggle.setBounds(botBtns.removeFromLeft(48));
+
+        const int knobW = juce::jmax(58, r.getWidth() / 8);
+        auto placeKnob = [&r, knobW](juce::Slider& s, juce::Label& l)
+        {
+            auto slot = r.removeFromLeft(knobW);
+            l.setBounds(slot.removeFromTop(14));
+            s.setBounds(slot);
+        };
+
+        placeKnob(bandFreqSlider, bandFreqLabel);
+        placeKnob(bandGainSlider, bandGainLabel);
+        placeKnob(bandQSlider, bandQLabel);
+        placeKnob(bandSlopeSlider, bandSlopeLabel);
+        placeKnob(bandDynRangeSlider, bandDynRangeLabel);
+        placeKnob(bandDynThreshSlider, bandDynThreshLabel);
+        placeKnob(bandDynAttackSlider, bandDynAttackLabel);
+        placeKnob(bandDynReleaseSlider, bandDynReleaseLabel);
+    }
+
+    {
+        auto r = bottomBarBounds.reduced(8, 4);
+        auto leftCol = r.removeFromLeft(130);
+        specDeltaToggle.setBounds(leftCol.removeFromTop(40).reduced(0, 4));
+
+        const int totalKnobs = 6;
+        const int knobW = juce::jmax(62, r.getWidth() / totalKnobs);
+        auto placeKnob = [&r, knobW](juce::Slider& s, juce::Label& l)
+        {
+            auto slot = r.removeFromLeft(knobW);
+            l.setBounds(slot.removeFromTop(14));
+            s.setBounds(slot);
+        };
+
+        placeKnob(specDepthSlider, specDepthLabel);
+        placeKnob(specSharpSlider, specSharpLabel);
+        placeKnob(specSmoothSlider, specSmoothLabel);
+        placeKnob(specMixSlider, specMixLabel);
+        placeKnob(gainScaleSlider, gainScaleLabel);
+        placeKnob(outputGainSlider, outputGainLabel);
+    }
+}
