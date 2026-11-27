@@ -76,11 +76,16 @@ private:
     };
 
     void syncParametersToDSP();
-    void applyCharacterAndOutput(juce::AudioBuffer<float>& buffer, CharacterMode mode, float outGainDb, bool phaseInvert) noexcept;
+    void applyCharacterAndOutput(juce::AudioBuffer<float>& buffer,
+                                 CharacterMode mode,
+                                 float outGainDb,
+                                 bool phaseInvert,
+                                 bool autoGainEnabled) noexcept;
 
     dspcore::ParametricEQEngine eqEngine;
     dspcore::SpectralResonanceEngine spectralEngine;
     double currentSampleRate = 48000.0;
+    float autoGainSmoothDb = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HybridResonanceEQProcessor)
 };
